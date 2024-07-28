@@ -204,13 +204,13 @@ int secp256k1_bulletproof_rangeproof_prove(
     ARG_CHECK(gens != NULL);
     ARG_CHECK(gens->n >= 2 * nbits * n_commits);
     ARG_CHECK(
-        (proof != NULL && plen != NULL && tau_x == NULL && t_one == NULL && t_two == NULL && commits == NULL) ||
-        (proof == NULL && plen == NULL && tau_x == NULL && t_one != NULL && t_two != NULL && commits != NULL && private_nonce != NULL) ||
-        (proof == NULL && plen == NULL && tau_x != NULL && t_one != NULL && t_two != NULL && commits != NULL && private_nonce != NULL) ||
-        (proof != NULL && plen != NULL && tau_x != NULL && t_one != NULL && t_two != NULL && commits != NULL && private_nonce != NULL)
-    ); /* 1) normal BP, 2) multi-party BP step 1, 3) multi-party BP step 2, 4) multi-party BP step 3 */
+        (proof != NULL && plen != NULL && tau_x == NULL && t_one == NULL && t_two == NULL && commits == NULL && blind != NULL) ||
+        (proof == NULL && plen == NULL && tau_x == NULL && t_one != NULL && t_two != NULL && commits != NULL && blind != NULL && private_nonce != NULL) ||
+        (proof == NULL && plen == NULL && tau_x != NULL && t_one != NULL && t_two != NULL && commits != NULL && blind != NULL && private_nonce != NULL) ||
+        (proof != NULL && plen != NULL && tau_x != NULL && t_one != NULL && t_two != NULL && commits != NULL && blind != NULL && private_nonce != NULL) ||
+        (proof != NULL && plen != NULL && tau_x != NULL && t_one != NULL && t_two != NULL && commits != NULL && blind == NULL && private_nonce == NULL)
+    ); /* 1) normal BP, 2) multi-party BP step 1, 3) multi-party BP step 2, 4) multi-party BP step 3, 5) normal BP without blinding factors */
     ARG_CHECK(value != NULL);
-    ARG_CHECK(blind != NULL);
     ARG_CHECK(value_gen != NULL);
     ARG_CHECK(nonce != NULL);
     ARG_CHECK(n_commits > 0 && n_commits);
@@ -233,11 +233,13 @@ int secp256k1_bulletproof_rangeproof_prove(
 
     secp256k1_generator_load(&value_genp, value_gen);
     for (i = 0; i < n_commits; i++) {
-        int overflow;
-        secp256k1_scalar_set_b32(&blinds[i], blind[i], &overflow);
-        if (overflow || secp256k1_scalar_is_zero(&blinds[i])) {
-            secp256k1_scratch_deallocate_frame(scratch);
-            return 0;
+        if(blind != NULL) {
+            int overflow;
+            secp256k1_scalar_set_b32(&blinds[i], blind[i], &overflow);
+            if (overflow || secp256k1_scalar_is_zero(&blinds[i])) {
+                secp256k1_scratch_deallocate_frame(scratch);
+                return 0;
+            }
         }
         
         if (commits == NULL) {
