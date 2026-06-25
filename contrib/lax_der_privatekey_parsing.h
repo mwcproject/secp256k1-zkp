@@ -40,9 +40,15 @@ extern "C" {
  *  Args: ctx:        pointer to a context object, initialized for signing (cannot
  *                    be NULL)
  *  Out: privkey:     pointer to an array for storing the private key in BER.
- *                    Should have space for 279 bytes, and cannot be NULL.
- *       privkeylen:  Pointer to an int where the length of the private key in
- *                    privkey will be stored.
+ *                    Cannot be NULL.
+ *  In/Out: privkeylen:
+ *                    Pointer to a length integer. Initially, this integer
+ *                    should be set to the size of privkey. After the call it
+ *                    will be set to the length of the serialization on
+ *                    success, or to the required length if the buffer was too
+ *                    small. A buffer of 214 bytes is sufficient for
+ *                    compressed output and 279 bytes is sufficient for
+ *                    uncompressed output.
  *  In:  seckey:      pointer to a 32-byte secret key to export.
  *       compressed:  1 if the key should be exported in
  *                    compressed format, 0 otherwise

@@ -45,7 +45,7 @@ static void secp256k1_ge_set_xy(secp256k1_ge *r, const secp256k1_fe *x, const se
 
 /** Set a group element (affine) equal to the point with the given X coordinate
  *  and a Y coordinate that is a quadratic residue modulo p. The return value
- *  is true iff a coordinate with the given X coordinate exists.
+ *  is true if a coordinate with the given X coordinate exists.
  */
 static int secp256k1_ge_set_xquad(secp256k1_ge *r, const secp256k1_fe *x);
 
@@ -65,7 +65,7 @@ static void secp256k1_ge_neg(secp256k1_ge *r, const secp256k1_ge *a);
 static void secp256k1_ge_set_gej(secp256k1_ge *r, secp256k1_gej *a);
 
 /** Set a batch of group elements equal to the inputs given in jacobian coordinates */
-static void secp256k1_ge_set_all_gej_var(secp256k1_ge *r, const secp256k1_gej *a, size_t len);
+static int secp256k1_ge_set_all_gej_var(secp256k1_ge *r, const secp256k1_gej *a, size_t len);
 
 /** Bring a batch inputs given in jacobian coordinates (with known z-ratios) to
  *  the same global z "denominator". zr must contain the known z-ratios such
@@ -92,8 +92,10 @@ static void secp256k1_gej_neg(secp256k1_gej *r, const secp256k1_gej *a);
 /** Check whether a group element is the point at infinity. */
 static int secp256k1_gej_is_infinity(const secp256k1_gej *a);
 
-/** Check whether a group element's y coordinate is a quadratic residue. */
-static int secp256k1_gej_has_quad_y_var(const secp256k1_gej *a);
+/** Check whether a group element's y coordinate is a quadratic residue.
+ * err - error flag, will be set to 1 in case of error. Caller must send it with 0 value to process.
+ */
+static int secp256k1_gej_has_quad_y_var(const secp256k1_gej *a, int * err);
 
 /** Set r equal to the double of a. If rzr is not-NULL, r->z = a->z * *rzr (where infinity means an implicit z = 0).
  * a may not be zero. Constant time. */

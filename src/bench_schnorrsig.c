@@ -74,6 +74,7 @@ int main(void) {
     size_t i;
     bench_schnorrsig_data data;
 
+    /* Skipping randomize because it is a benchmark, no needs for high security */
     data.ctx = secp256k1_context_create(SECP256K1_CONTEXT_VERIFY | SECP256K1_CONTEXT_SIGN);
     data.scratch = secp256k1_scratch_space_create(data.ctx, 1024 * 1024 * 1024);
     data.pk = (const unsigned char **)malloc(MAX_SIGS * sizeof(unsigned char *));

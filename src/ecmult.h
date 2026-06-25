@@ -22,13 +22,14 @@ typedef struct {
 
 static const size_t SECP256K1_ECMULT_CONTEXT_PREALLOCATED_SIZE;
 static void secp256k1_ecmult_context_init(secp256k1_ecmult_context *ctx);
-static void secp256k1_ecmult_context_build(secp256k1_ecmult_context *ctx, void **prealloc);
+static int secp256k1_ecmult_context_build(secp256k1_ecmult_context *ctx, void **prealloc);
 static void secp256k1_ecmult_context_finalize_memcpy(secp256k1_ecmult_context *dst, const secp256k1_ecmult_context *src);
 static void secp256k1_ecmult_context_clear(secp256k1_ecmult_context *ctx);
 static int secp256k1_ecmult_context_is_built(const secp256k1_ecmult_context *ctx);
 
 /** Double multiply: R = na*A + ng*G */
-static void secp256k1_ecmult(const secp256k1_ecmult_context *ctx, secp256k1_gej *r, const secp256k1_gej *a, const secp256k1_scalar *na, const secp256k1_scalar *ng);
+/* Return 1 on success, 0 on failure */
+static int secp256k1_ecmult(const secp256k1_ecmult_context *ctx, secp256k1_gej *r, const secp256k1_gej *a, const secp256k1_scalar *na, const secp256k1_scalar *ng);
 
 typedef int (secp256k1_ecmult_multi_callback)(secp256k1_scalar *sc, secp256k1_ge *pt, size_t idx, void *data);
 

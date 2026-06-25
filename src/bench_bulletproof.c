@@ -31,7 +31,7 @@ typedef struct {
     bench_bulletproof_t *common;
     secp256k1_pedersen_commitment **commit;
     const unsigned char **blind;
-    size_t *value;
+    uint64_t *value;
     size_t n_commits;
     size_t nbits;
 } bench_bulletproof_rangeproof_t;
@@ -54,7 +54,7 @@ static void bench_bulletproof_common_setup(bench_bulletproof_t *data) {
 static void bench_bulletproof_rangeproof_setup(void* arg) {
     bench_bulletproof_rangeproof_t *data = (bench_bulletproof_rangeproof_t*)arg;
     size_t i;
-    size_t v;
+    uint64_t v;
 
     unsigned char blind[32] = "and my kingdom too for a blinder";
 
@@ -62,7 +62,7 @@ static void bench_bulletproof_rangeproof_setup(void* arg) {
 
     data->commit = (secp256k1_pedersen_commitment **)malloc(data->common->n_proofs * sizeof(*data->commit));
     data->blind = (const unsigned char **)malloc(data->n_commits * sizeof(*data->blind));
-    data->value = (size_t *)malloc(data->n_commits * sizeof(*data->commit));
+    data->value = (uint64_t *)malloc(data->n_commits * sizeof(uint64_t));
 
     for (i = 0; i < data->common->n_proofs; i++) {
         data->commit[i] = (secp256k1_pedersen_commitment *)malloc(data->n_commits * sizeof(*data->commit[i]));
@@ -70,6 +70,7 @@ static void bench_bulletproof_rangeproof_setup(void* arg) {
 
     for (i = 0; i < data->n_commits; i++) {
         data->blind[i] = malloc(32);
+        /* lossy integer conversion is expected here. It is a test.  */
         blind[0] = i;
         blind[1] = i >> 8;
         memcpy((unsigned char*) data->blind[i], blind, 32);
@@ -88,7 +89,7 @@ static void bench_bulletproof_rangeproof_setup(void* arg) {
     CHECK(secp256k1_bulletproof_rangeproof_verify(data->common->ctx, data->common->scratch, data->common->generators, data->common->proof[0], data->common->plen, NULL, data->commit[0], data->n_commits, data->nbits, data->common->value_gen, NULL, 0) == 1);
     CHECK(secp256k1_bulletproof_rangeproof_verify_multi(data->common->ctx, data->common->scratch, data->common->generators, (const unsigned char **) data->common->proof, data->common->n_proofs, data->common->plen, NULL, (const secp256k1_pedersen_commitment **) data->commit, data->n_commits, data->nbits, data->common->value_gen, NULL, 0) == 1);
     if (data->n_commits == 1) {
-        CHECK(secp256k1_bulletproof_rangeproof_rewind(data->common->ctx, &v, blind, data->common->proof[0], data->common->plen, 0, data->commit[0], &data->common->value_gen[0], data->common->nonce, NULL, 0, NULL) == 1);
+        CHECK(secp256k1_bulletproof_rangeproof_rewind(data->common->ctx, &v, blind, data->common->proof[0], data->common->plen, NULL, data->commit[0], &data->common->value_gen[0], &data->common->blind_gen, data->common->nonce, NULL, NULL, 0, NULL) == 1);
     }
 }
 
@@ -142,24 +143,24 @@ static void bench_bulletproof_rangeproof_verify(void* arg) {
 
 static void bench_bulletproof_rangeproof_rewind_succeed(void* arg) {
     size_t i;
-    size_t v;
+    uint64_t v;
     unsigned char blind[32];
     bench_bulletproof_rangeproof_t *data = (bench_bulletproof_rangeproof_t*)arg;
 
     for (i = 0; i < data->common->iters; i++) {
-        CHECK(secp256k1_bulletproof_rangeproof_rewind(data->common->ctx, &v, blind, data->common->proof[0], data->common->plen, 0, data->commit[0], &data->common->value_gen[0], data->common->nonce, NULL, 0, NULL) == 1);
+        CHECK(secp256k1_bulletproof_rangeproof_rewind(data->common->ctx, &v, blind, data->common->proof[0], data->common->plen, NULL, data->commit[0], &data->common->value_gen[0], &data->common->blind_gen, data->common->nonce, NULL, NULL, 0, NULL) == 1);
     }
 }
 
 static void bench_bulletproof_rangeproof_rewind_fail(void* arg) {
     size_t i;
-    size_t v;
+    uint64_t v;
     unsigned char blind[32];
     bench_bulletproof_rangeproof_t *data = (bench_bulletproof_rangeproof_t*)arg;
 
     data->common->nonce[0] ^= 1;
     for (i = 0; i < data->common->iters; i++) {
-        CHECK(secp256k1_bulletproof_rangeproof_rewind(data->common->ctx, &v, blind, data->common->proof[0], data->common->plen, 0, data->commit[0], &data->common->value_gen[0], data->common->nonce, NULL, 0, NULL) == 0);
+        CHECK(secp256k1_bulletproof_rangeproof_rewind(data->common->ctx, &v, blind, data->common->proof[0], data->common->plen, NULL, data->commit[0], &data->common->value_gen[0], &data->common->blind_gen, data->common->nonce, NULL, NULL, 0, NULL) == 0);
     }
     data->common->nonce[0] ^= 1;
 }
@@ -172,40 +173,40 @@ static void run_rangeproof_test(bench_bulletproof_rangeproof_t *data, size_t nbi
     data->common->iters = 100;
 
     data->common->n_proofs = 1;
-    sprintf(str, "bulletproof_prove, %i, %i, 0, ", (int)nbits, (int) n_commits);
+    sprintf(str, "bulletproof_prove, %zu, %zu, 0, ", nbits, n_commits);
     run_benchmark(str, bench_bulletproof_rangeproof_prove, bench_bulletproof_rangeproof_setup, bench_bulletproof_rangeproof_teardown, (void *)data, 5, 25);
 
     data->common->n_proofs = 1;
-    sprintf(str, "bulletproof_verify, %i, %i, 1, ", (int)nbits, (int) n_commits);
+    sprintf(str, "bulletproof_verify, %zu, %zu, 1, ", nbits, n_commits);
     run_benchmark(str, bench_bulletproof_rangeproof_verify, bench_bulletproof_rangeproof_setup, bench_bulletproof_rangeproof_teardown, (void *)data, 5, data->common->iters);
 
     if (n_commits == 1) {
-        sprintf(str, "bulletproof_rewind_succeed, %i, ", (int)nbits);
+        sprintf(str, "bulletproof_rewind_succeed, %zu, ", nbits);
         run_benchmark(str, bench_bulletproof_rangeproof_rewind_succeed, bench_bulletproof_rangeproof_setup, bench_bulletproof_rangeproof_teardown, (void *)data, 5, data->common->iters);
-        sprintf(str, "bulletproof_rewind_fail, %i, ", (int)nbits);
+        sprintf(str, "bulletproof_rewind_fail, %zu, ", nbits);
         run_benchmark(str, bench_bulletproof_rangeproof_rewind_fail, bench_bulletproof_rangeproof_setup, bench_bulletproof_rangeproof_teardown, (void *)data, 5, data->common->iters);
     }
 
     data->common->n_proofs = 2;
-    sprintf(str, "bulletproof_verify, %i, %i, 2, ", (int)nbits, (int) n_commits);
+    sprintf(str, "bulletproof_verify, %zu, %zu, 2, ", nbits, n_commits);
     run_benchmark(str, bench_bulletproof_rangeproof_verify, bench_bulletproof_rangeproof_setup, bench_bulletproof_rangeproof_teardown, (void *)data, 5, data->common->iters);
 
     data->common->iters = 10;
     data->common->n_proofs = 50;
-    sprintf(str, "bulletproof_verify, %i, %i, 50, ", (int)nbits, (int) n_commits);
+    sprintf(str, "bulletproof_verify, %zu, %zu, 50, ", nbits, n_commits);
     run_benchmark(str, bench_bulletproof_rangeproof_verify, bench_bulletproof_rangeproof_setup, bench_bulletproof_rangeproof_teardown, (void *)data, 5, data->common->iters);
 
     data->common->iters = 1;
     data->common->n_proofs = 100;
-    sprintf(str, "bulletproof_verify, %i, %i, 100, ", (int)nbits, (int) n_commits);
+    sprintf(str, "bulletproof_verify, %zu, %zu, 100, ", nbits, n_commits);
     run_benchmark(str, bench_bulletproof_rangeproof_verify, bench_bulletproof_rangeproof_setup, bench_bulletproof_rangeproof_teardown, (void *)data, 5, data->common->iters);
 
     data->common->n_proofs = 500;
-    sprintf(str, "bulletproof_verify, %i, %i, 500, ", (int)nbits, (int) n_commits);
+    sprintf(str, "bulletproof_verify, %zu, %zu, 500, ", nbits, n_commits);
     run_benchmark(str, bench_bulletproof_rangeproof_verify, bench_bulletproof_rangeproof_setup, bench_bulletproof_rangeproof_teardown, (void *)data, 5, data->common->iters);
 
     data->common->n_proofs = 1000;
-    sprintf(str, "bulletproof_verify, %i, %i, 1000, ", (int)nbits, (int) n_commits);
+    sprintf(str, "bulletproof_verify, %zu, %zu, 1000, ", nbits, n_commits);
     run_benchmark(str, bench_bulletproof_rangeproof_verify, bench_bulletproof_rangeproof_setup, bench_bulletproof_rangeproof_teardown, (void *)data, 5, data->common->iters);
 }
 
@@ -215,8 +216,11 @@ int main(void) {
 
     data.blind_gen = secp256k1_generator_const_g;
     data.ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
+    CHECK(data.ctx != NULL);
     data.scratch = secp256k1_scratch_space_create(data.ctx, 1024 * 1024 * 1024);
+    CHECK(data.scratch != NULL);
     data.generators = secp256k1_bulletproof_generators_create(data.ctx, &data.blind_gen, 64 * 1024);
+    CHECK(data.generators != NULL);
 
     rp_data.common = &data;
 

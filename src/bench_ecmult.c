@@ -64,7 +64,7 @@ static void bench_ecmult(void* arg) {
     size_t iter;
 
     for (iter = 0; iter < iters; ++iter) {
-        data->ecmult_multi(&data->ctx->ecmult_ctx, data->scratch, &data->output[iter], data->includes_g ? &data->scalars[data->offset1] : NULL, bench_callback, arg, count - includes_g);
+        CHECK(data->ecmult_multi(&data->ctx->ecmult_ctx, data->scratch, &data->output[iter], data->includes_g ? &data->scalars[data->offset1] : NULL, bench_callback, arg, count - includes_g));
         data->offset1 = (data->offset1 + count) % POINTS;
         data->offset2 = (data->offset2 + count - 1) % POINTS;
     }
@@ -125,7 +125,7 @@ static void run_test(bench_data* data, size_t count, int includes_g) {
             secp256k1_scalar_add(&total, &total, &tmp);
         }
         secp256k1_scalar_negate(&total, &total);
-        secp256k1_ecmult(&data->ctx->ecmult_ctx, &data->expected_output[iter], NULL, &zero, &total);
+        CHECK(secp256k1_ecmult(&data->ctx->ecmult_ctx, &data->expected_output[iter], NULL, &zero, &total));
     }
 
     /* Run the benchmark. */
@@ -146,6 +146,10 @@ int main(int argc, char **argv) {
         } else if(have_flag(argc, argv, "strauss_wnaf")) {
             printf("Using strauss_wnaf:\n");
             data.ecmult_multi = secp256k1_ecmult_strauss_batch_single;
+        }
+        else {
+            printf("Invalid arguments, aborting!!!");
+            abort();
         }
     } else {
         data.ecmult_multi = secp256k1_ecmult_multi_var;
@@ -172,7 +176,7 @@ int main(int argc, char **argv) {
             secp256k1_scalar_add(&data.seckeys[i], &data.seckeys[i - 1], &data.seckeys[i - 1]);
         }
     }
-    secp256k1_ge_set_all_gej_var(data.pubkeys, pubkeys_gej, POINTS);
+    CHECK(secp256k1_ge_set_all_gej_var(data.pubkeys, pubkeys_gej, POINTS));
     free(pubkeys_gej);
 
     for (i = 1; i <= 8; ++i) {

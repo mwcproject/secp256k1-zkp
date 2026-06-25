@@ -113,7 +113,7 @@ SECP256K1_API size_t secp256k1_surjectionproof_n_total_inputs(
 
 /** Returns the actual number of inputs that a proof uses
  *
- * Returns: the number of inputs for the given proof
+ * Returns: the positive number of inputs for the given proof. In case of error return 0
  * In:   ctx: pointer to a context object
  *     proof: a pointer to a proof object
  */
@@ -122,7 +122,8 @@ SECP256K1_API size_t secp256k1_surjectionproof_n_used_inputs(
   const secp256k1_surjectionproof* proof
 ) SECP256K1_ARG_NONNULL(1) SECP256K1_ARG_NONNULL(2);
 
-/** Returns the total size this proof would take, in bytes, when serialized
+/** Returns the total size this proof would take, in bytes, when serialized.
+ *   In case of error return 0.
  *
  * Returns: the total size
  * In:   ctx: pointer to a context object

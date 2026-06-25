@@ -36,22 +36,31 @@ const secp256k1_generator secp256k1_generator_const_h = {{
     0x36, 0xda, 0xc2, 0x8a, 0xf1, 0x76, 0x69, 0x68, 0xc3, 0x0c, 0x23, 0x13, 0xf3, 0xa3, 0x89, 0x04
 }};
 
-static void secp256k1_generator_load(secp256k1_ge* ge, const secp256k1_generator* gen) {
-    int succeed;
-    succeed = secp256k1_fe_set_b32(&ge->x, &gen->data[0]);
-    VERIFY_CHECK(succeed != 0);
-    succeed = secp256k1_fe_set_b32(&ge->y, &gen->data[32]);
-    VERIFY_CHECK(succeed != 0);
-    ge->infinity = 0;
-    (void) succeed;
+static int secp256k1_generator_load(secp256k1_ge* ge, const secp256k1_generator* gen) {
+    secp256k1_ge ret;
+
+    if (secp256k1_fe_set_b32(&ret.x, &gen->data[0]) != 1)
+        return 0;
+    if (secp256k1_fe_set_b32(&ret.y, &gen->data[32]) != 1)
+        return 0;
+    ret.infinity = 0;
+    if (!secp256k1_ge_is_valid_var(&ret))
+        return 0;
+
+    *ge = ret;
+    return 1;
 }
 
-static void secp256k1_generator_save(secp256k1_generator *gen, secp256k1_ge* ge) {
-    VERIFY_CHECK(!secp256k1_ge_is_infinity(ge));
+static int secp256k1_generator_save(secp256k1_generator *gen, secp256k1_ge* ge) {
+    if (secp256k1_ge_is_infinity(ge))
+        return 0;
+
     secp256k1_fe_normalize_var(&ge->x);
     secp256k1_fe_normalize_var(&ge->y);
     secp256k1_fe_get_b32(&gen->data[0], &ge->x);
     secp256k1_fe_get_b32(&gen->data[32], &ge->y);
+
+    return 1;
 }
 
 int secp256k1_generator_parse(const secp256k1_context* ctx, secp256k1_generator* gen, const unsigned char *input) {
@@ -70,26 +79,38 @@ int secp256k1_generator_parse(const secp256k1_context* ctx, secp256k1_generator*
     if (input[0] & 1) {
         secp256k1_ge_neg(&ge, &ge);
     }
-    secp256k1_generator_save(gen, &ge);
+    if (!secp256k1_generator_save(gen, &ge))
+        return 0;
+
     return 1;
 }
 
 int secp256k1_generator_serialize(const secp256k1_context* ctx, unsigned char *output, const secp256k1_generator* gen) {
     secp256k1_ge ge;
+    int res;
+    int err = 0;
 
     VERIFY_CHECK(ctx != NULL);
     ARG_CHECK(output != NULL);
     ARG_CHECK(gen != NULL);
 
-    secp256k1_generator_load(&ge, gen);
+    if (!secp256k1_generator_load(&ge, gen))
+        return 0;
 
-    output[0] = 11 ^ secp256k1_fe_is_quad_var(&ge.y);
+    if (!secp256k1_ge_is_valid_var(&ge))
+        return 0;
+
+    res = secp256k1_fe_is_quad_var(&ge.y, &err);
+    if (err)
+        return 0;
+
+    output[0] = 11 ^ res;
     secp256k1_fe_normalize_var(&ge.x);
     secp256k1_fe_get_b32(&output[1], &ge.x);
     return 1;
 }
 
-static void shallue_van_de_woestijne(secp256k1_ge* ge, const secp256k1_fe* t) {
+static int shallue_van_de_woestijne(secp256k1_ge* ge, const secp256k1_fe* t) {
     /* Implements the algorithm from:
      *    Indifferentiable Hashing to Barreto-Naehrig Curves
      *    Pierre-Alain Fouque and Mehdi Tibouchi
@@ -127,7 +148,7 @@ static void shallue_van_de_woestijne(secp256k1_ge* ge, const secp256k1_fe* t) {
     static const secp256k1_fe b_plus_one = SECP256K1_FE_CONST(0, 0, 0, 0, 0, 0, 0, 8);
 
     secp256k1_fe wn, wd, x1n, x2n, x3n, x3d, jinv, tmp, x1, x2, x3, alphain, betain, gammain, y1, y2, y3;
-    int alphaquad, betaquad;
+    int alphaquad, betaquad, gammaquad;
 
     secp256k1_fe_mul(&wn, &c, t); /* mag 1 */
     secp256k1_fe_sqr(&wd, t); /* mag 1 */
@@ -144,6 +165,11 @@ static void shallue_van_de_woestijne(secp256k1_ge* ge, const secp256k1_fe* t) {
     secp256k1_fe_sqr(&x3n, &wd); /* mag 1 */
     secp256k1_fe_add(&x3n, &x3d); /* mag 2 */
     secp256k1_fe_mul(&jinv, &x3d, &wd); /* mag 1 */
+    // checking whether the denominator jinv is zero modulo p, even if its internal
+    // representation is not already canonical
+    if (secp256k1_fe_normalizes_to_zero(&jinv)) {
+        return 0;
+    }
     secp256k1_fe_inv(&jinv, &jinv); /* mag 1 */
     secp256k1_fe_mul(&x1, &x1n, &x3d); /* mag 1 */
     secp256k1_fe_mul(&x1, &x1, &jinv); /* mag 1 */
@@ -164,7 +190,10 @@ static void shallue_van_de_woestijne(secp256k1_ge* ge, const secp256k1_fe* t) {
 
     alphaquad = secp256k1_fe_sqrt(&y1, &alphain);
     betaquad = secp256k1_fe_sqrt(&y2, &betain);
-    secp256k1_fe_sqrt(&y3, &gammain);
+    gammaquad = secp256k1_fe_sqrt(&y3, &gammain);
+    if (!alphaquad && !betaquad && !gammaquad) {
+        return 0;
+    }
 
     secp256k1_fe_cmov(&x1, &x2, (!alphaquad) & betaquad);
     secp256k1_fe_cmov(&y1, &y2, (!alphaquad) & betaquad);
@@ -180,6 +209,7 @@ static void shallue_van_de_woestijne(secp256k1_ge* ge, const secp256k1_fe* t) {
      * we choose to use t's oddness, as it is faster to determine. */
     secp256k1_fe_negate(&tmp, &ge->y, 1);
     secp256k1_fe_cmov(&ge->y, &tmp, secp256k1_fe_is_odd(t));
+    return 1;
 }
 
 static int secp256k1_generator_generate_internal(const secp256k1_context* ctx, secp256k1_generator* gen, const unsigned char *key32, const unsigned char *blind32) {
@@ -191,23 +221,24 @@ static int secp256k1_generator_generate_internal(const secp256k1_context* ctx, s
     int overflow;
     secp256k1_sha256 sha256;
     unsigned char b32[32];
-    int ret = 1;
 
     if (blind32) {
         secp256k1_scalar blind;
         secp256k1_scalar_set_b32(&blind, blind32, &overflow);
-        ret = !overflow;
-        CHECK(ret);
-        secp256k1_ecmult_gen(&ctx->ecmult_gen_ctx, &accum, &blind);
+        if (overflow)
+            return 0;
+        if (!secp256k1_ecmult_gen(&ctx->ecmult_gen_ctx, &accum, &blind))
+            return 0;
     }
 
     secp256k1_sha256_initialize(&sha256);
     secp256k1_sha256_write(&sha256, prefix1, 16);
     secp256k1_sha256_write(&sha256, key32, 32);
     secp256k1_sha256_finalize(&sha256, b32);
-    ret &= secp256k1_fe_set_b32(&t, b32);
-    CHECK(ret);
-    shallue_van_de_woestijne(&add, &t);
+    if (!secp256k1_fe_set_b32(&t, b32))
+        return 0;
+    if (!shallue_van_de_woestijne(&add, &t))
+        return 0;
     if (blind32) {
         secp256k1_gej_add_ge(&accum, &accum, &add);
     } else {
@@ -218,14 +249,17 @@ static int secp256k1_generator_generate_internal(const secp256k1_context* ctx, s
     secp256k1_sha256_write(&sha256, prefix2, 16);
     secp256k1_sha256_write(&sha256, key32, 32);
     secp256k1_sha256_finalize(&sha256, b32);
-    ret &= secp256k1_fe_set_b32(&t, b32);
-    CHECK(ret);
-    shallue_van_de_woestijne(&add, &t);
+    if (!secp256k1_fe_set_b32(&t, b32))
+        return 0;
+    if (!shallue_van_de_woestijne(&add, &t))
+        return 0;
     secp256k1_gej_add_ge(&accum, &accum, &add);
 
     secp256k1_ge_set_gej(&add, &accum);
-    secp256k1_generator_save(gen, &add);
-    return ret;
+    if (!secp256k1_generator_save(gen, &add))
+        return 0;
+
+    return 1;
 }
 
 int secp256k1_generator_generate(const secp256k1_context* ctx, secp256k1_generator* gen, const unsigned char *key32) {

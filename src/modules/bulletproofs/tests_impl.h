@@ -27,16 +27,26 @@ static void test_bulletproof_api(void) {
     secp256k1_pedersen_commitment pcommit[4];
     const secp256k1_pedersen_commitment *pcommit_arr[1];
     unsigned char proof[2000];
+    unsigned char proof_null_min[2000];
+    unsigned char proof_private_nonce[2000];
+    unsigned char proof_zero_min[2000];
     const unsigned char *proof_ptr = proof;
+    /* Note: it is a test, don't need any randomness */
     const unsigned char blind[32] = "   i am not a blinding factor   ";
+    const unsigned char private_nonce[32] = "distinct rewind private nonce!!!";
     const unsigned char *blind_ptr[4];
     size_t blindlen = sizeof(blind);
     size_t plen = sizeof(proof);
+    size_t plen_null_min = sizeof(proof_null_min);
+    size_t plen_private_nonce = sizeof(proof_private_nonce);
+    size_t plen_zero_min = sizeof(proof_zero_min);
+    unsigned char proof_tampered[2000];
     uint64_t value[4] = { 1234, 4567, 8910, 1112 } ;
     uint64_t min_value[4] = { 1000, 4567, 0, 5000 } ;
     const uint64_t *mv_ptr = min_value;
     unsigned char rewind_blind[32];
-    size_t rewind_v;
+    uint64_t rewind_v;
+    const uint64_t zero = 0;
 
     int32_t ecount = 0;
 
@@ -119,6 +129,12 @@ static void test_bulletproof_api(void) {
     CHECK(ecount == 16);
     CHECK(secp256k1_bulletproof_rangeproof_prove(both, scratch, gens, proof, &plen, NULL, NULL, NULL, value, min_value, blind_ptr, NULL, 1, &value_gen, 64, blind, NULL, blind, 32, NULL) == 1);
     CHECK(ecount == 16);
+    CHECK(secp256k1_bulletproof_rangeproof_prove(both, scratch, gens, proof_null_min, &plen_null_min, NULL, NULL, NULL, value, NULL, blind_ptr, NULL, 1, &value_gen, 64, blind, NULL, NULL, 0, NULL) == 1);
+    CHECK(ecount == 16);
+    CHECK(secp256k1_bulletproof_rangeproof_prove(both, scratch, gens, proof_private_nonce, &plen_private_nonce, NULL, NULL, NULL, value, NULL, blind_ptr, NULL, 1, &value_gen, 64, blind, private_nonce, NULL, 0, NULL) == 1);
+    CHECK(ecount == 16);
+    CHECK(secp256k1_bulletproof_rangeproof_prove(both, scratch, gens, proof_zero_min, &plen_zero_min, NULL, NULL, NULL, value, &zero, blind_ptr, NULL, 1, &value_gen, 64, blind, NULL, NULL, 0, NULL) == 1);
+    CHECK(ecount == 16);
 
     /* rangeproof_verify */
     ecount = 0;
@@ -168,6 +184,10 @@ static void test_bulletproof_api(void) {
     CHECK(ecount == 12);
     CHECK(secp256k1_bulletproof_rangeproof_verify(both, scratch, gens, proof, plen, min_value, pcommit, 1, 64, &value_gen, blind, 0) == 0);
     CHECK(ecount == 12);
+    CHECK(secp256k1_bulletproof_rangeproof_verify(both, scratch, gens, proof_null_min, plen_null_min, NULL, pcommit, 1, 64, &value_gen, NULL, 0) == 1);
+    CHECK(secp256k1_bulletproof_rangeproof_verify(both, scratch, gens, proof_null_min, plen_null_min, &zero, pcommit, 1, 64, &value_gen, NULL, 0) == 0);
+    CHECK(secp256k1_bulletproof_rangeproof_verify(both, scratch, gens, proof_zero_min, plen_zero_min, &zero, pcommit, 1, 64, &value_gen, NULL, 0) == 1);
+    CHECK(secp256k1_bulletproof_rangeproof_verify(both, scratch, gens, proof_zero_min, plen_zero_min, NULL, pcommit, 1, 64, &value_gen, NULL, 0) == 0);
 
     /* verify_multi */
     ecount = 0;
@@ -216,29 +236,40 @@ static void test_bulletproof_api(void) {
 
     /* Rewind */
     ecount = 0;
-    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, proof, plen, min_value[0], pcommit, &value_gen, blind, blind, 32, NULL) == 1);
+    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, proof, plen, &min_value[0], pcommit, &value_gen, &secp256k1_generator_const_h, blind, NULL, blind, 32, NULL) == 1);
     CHECK(ecount == 0);
-    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, NULL, rewind_blind, proof, plen, min_value[0], pcommit, &value_gen, blind, blind, 32, NULL) == 0);
+    memcpy(proof_tampered, proof, plen);
+    proof_tampered[31] ^= 1;
+    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, proof_tampered, plen, &min_value[0], pcommit, &value_gen, &secp256k1_generator_const_h, blind, NULL, blind, 32, NULL) == 1);
+    CHECK(ecount == 0);
+    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, NULL, rewind_blind, proof, plen, &min_value[0], pcommit, &value_gen, &secp256k1_generator_const_h, blind, NULL, blind, 32, NULL) == 0);
     CHECK(ecount == 1);
-    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, NULL, proof, plen, min_value[0], pcommit, &value_gen, blind, blind, 32, NULL) == 0);
+    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, NULL, proof, plen, &min_value[0], pcommit, &value_gen, &secp256k1_generator_const_h, blind, NULL, blind, 32, NULL) == 0);
     CHECK(ecount == 2);
-    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, NULL, plen, min_value[0], pcommit, &value_gen, blind, blind, 32, NULL) == 0);
+    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, NULL, plen, &min_value[0], pcommit, &value_gen, &secp256k1_generator_const_h, blind, NULL, blind, 32, NULL) == 0);
     CHECK(ecount == 3);
-    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, proof, 0, min_value[0], pcommit, &value_gen, blind, blind, 32, NULL) == 0);
+    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, proof, 0, &min_value[0], pcommit, &value_gen, &secp256k1_generator_const_h, blind, NULL, blind, 32, NULL) == 0);
     CHECK(ecount == 3);
-    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, proof, plen, 0, pcommit, &value_gen, blind, blind, 32, NULL) == 0);
+    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, proof, plen, &zero, pcommit, &value_gen, &secp256k1_generator_const_h, blind, NULL, blind, 32, NULL) == 0);
+    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, proof, plen, NULL, pcommit, &value_gen, &secp256k1_generator_const_h, blind, NULL, blind, 32, NULL) == 0);
     CHECK(ecount == 3);
-    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, proof, plen, min_value[0], NULL, &value_gen, blind, blind, 32, NULL) == 0);
+    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, proof_null_min, plen_null_min, NULL, pcommit, &value_gen, &secp256k1_generator_const_h, blind, NULL, NULL, 0, NULL) == 1);
+    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, proof_null_min, plen_null_min, &zero, pcommit, &value_gen, &secp256k1_generator_const_h, blind, NULL, NULL, 0, NULL) == 0);
+    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, proof_zero_min, plen_zero_min, &zero, pcommit, &value_gen, &secp256k1_generator_const_h, blind, NULL, NULL, 0, NULL) == 1);
+    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, proof_zero_min, plen_zero_min, NULL, pcommit, &value_gen, &secp256k1_generator_const_h, blind, NULL, NULL, 0, NULL) == 0);
+    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, proof_private_nonce, plen_private_nonce, NULL, pcommit, &value_gen, &secp256k1_generator_const_h, blind, private_nonce, NULL, 0, NULL) == 1);
+    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, proof_private_nonce, plen_private_nonce, NULL, pcommit, &value_gen, &secp256k1_generator_const_h, blind, NULL, NULL, 0, NULL) == 1);
+    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, proof, plen, &min_value[0], NULL, &value_gen, &secp256k1_generator_const_h, blind, NULL, blind, 32, NULL) == 0);
     CHECK(ecount == 4);
-    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, proof, plen, min_value[0], pcommit, NULL, blind, blind, 32, NULL) == 0);
+    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, proof, plen, &min_value[0], pcommit, NULL, &secp256k1_generator_const_h, blind, NULL, blind, 32, NULL) == 0);
     CHECK(ecount == 5);
-    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, proof, plen, min_value[0], pcommit, &value_gen, NULL, blind, 32, NULL) == 0);
+    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, proof, plen, &min_value[0], pcommit, &value_gen, NULL, blind, NULL, blind, 32, NULL) == 0);
     CHECK(ecount == 6);
-    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, proof, plen, min_value[0], pcommit, &value_gen, blind, NULL, 32, NULL) == 0);
+    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, proof, plen, &min_value[0], pcommit, &value_gen, &secp256k1_generator_const_h, NULL, NULL, blind, 32, NULL) == 0);
     CHECK(ecount == 7);
-    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, proof, plen, min_value[0], pcommit, &value_gen, blind, blind, 0, NULL) == 0);
+    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, proof, plen, &min_value[0], pcommit, &value_gen, &secp256k1_generator_const_h, blind, NULL, blind, 0, NULL) == 0);
     CHECK(ecount == 7);
-    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, proof, plen, min_value[0], pcommit, &value_gen, blind, NULL, 0, NULL) == 0);
+    CHECK(secp256k1_bulletproof_rangeproof_rewind(none, &rewind_v, rewind_blind, proof, plen, &min_value[0], pcommit, &value_gen, &secp256k1_generator_const_h, blind, NULL, NULL, 0, NULL) == 0);
     CHECK(ecount == 7);
 
     secp256k1_bulletproof_generators_destroy(none, gens);
@@ -328,6 +359,7 @@ void test_bulletproof_inner_product(size_t n, const secp256k1_bulletproof_genera
     secp256k1_gej tmpj, tmpj2;
     secp256k1_scalar *a_arr = (secp256k1_scalar *)checked_malloc(&ctx->error_callback, n * sizeof(*a_arr));
     secp256k1_scalar *b_arr = (secp256k1_scalar *)checked_malloc(&ctx->error_callback, n * sizeof(*b_arr));
+    /* Note: it is a test, don't need any randomness */
     unsigned char commit[32] = "hash of P, c, etc. all that jazz";
     secp256k1_scalar one;
     size_t j;
@@ -336,8 +368,12 @@ void test_bulletproof_inner_product(size_t n, const secp256k1_bulletproof_genera
     secp256k1_bulletproof_innerproduct_context innp_ctx;
     unsigned char proof[2000];
     size_t plen = sizeof(proof);
+    secp256k1_scratch *scratch;
 
-    secp256k1_scratch *scratch = secp256k1_scratch_space_create(ctx, 100000 + 256 * (2 * n + 2));
+    CHECK(gens!=NULL);
+    CHECK(gens->n >= 2 * n);
+
+    scratch = secp256k1_scratch_space_create(ctx, 100000 + 256 * (2 * n + 2));
 
     for (j = 0; j < n; j++) {
         random_scalar_order(&a_arr[j]);
@@ -383,7 +419,7 @@ void test_bulletproof_inner_product(size_t n, const secp256k1_bulletproof_genera
     /* skew P by a random amount and instruct the verifier to offset it */
     random_scalar_order(&innp_ctx.p_offs);
     secp256k1_gej_set_ge(&tmpj2, &gens->blinding_gen[0]);
-    secp256k1_ecmult(&ctx->ecmult_ctx, &tmpj, &tmpj2, &innp_ctx.p_offs, &zero);
+    CHECK(secp256k1_ecmult(&ctx->ecmult_ctx, &tmpj, &tmpj2, &innp_ctx.p_offs, &zero));
     secp256k1_gej_add_var(&pj, &pj, &tmpj, NULL);
     secp256k1_ge_set_gej(&offs_ctx.p, &pj);
 
@@ -404,7 +440,7 @@ void test_bulletproof_inner_product(size_t n, const secp256k1_bulletproof_genera
 
     /* Offset P by some random point and then try to undo this in the verification */
     secp256k1_gej_set_ge(&tmpj2, &offs_ctx.ext_pt);
-    secp256k1_ecmult(&ctx->ecmult_ctx, &tmpj, &tmpj2, &offs_ctx.ext_sc, &zero);
+    CHECK(secp256k1_ecmult(&ctx->ecmult_ctx, &tmpj, &tmpj2, &offs_ctx.ext_sc, &zero));
     secp256k1_gej_neg(&tmpj, &tmpj);
     secp256k1_gej_add_ge_var(&tmpj, &tmpj, &offs_ctx.p, NULL);
     secp256k1_ge_set_gej(&offs_ctx.p, &tmpj);
@@ -426,7 +462,7 @@ void test_bulletproof_inner_product(size_t n, const secp256k1_bulletproof_genera
         }
     }
     random_scalar_order(&offs_ctx.skew_sc);
-    secp256k1_ecmult(&ctx->ecmult_ctx, &tmpj, &tmpj2, &offs_ctx.skew_sc, &zero);
+    CHECK(secp256k1_ecmult(&ctx->ecmult_ctx, &tmpj, &tmpj2, &offs_ctx.skew_sc, &zero));
     secp256k1_gej_add_ge_var(&tmpj, &tmpj, &offs_ctx.p, NULL);
     secp256k1_ge_set_gej(&offs_ctx.p, &tmpj);
     secp256k1_scalar_negate(&offs_ctx.skew_sc, &offs_ctx.skew_sc);
@@ -454,14 +490,52 @@ void test_bulletproof_inner_product(size_t n, const secp256k1_bulletproof_genera
     secp256k1_scratch_destroy(scratch);
 }
 
+void test_bulletproof_inner_product_rejects_infinity_points(const secp256k1_bulletproof_generators *gens) {
+    secp256k1_scalar a_arr[4];
+    secp256k1_scalar b_arr[4];
+    /* Note: it is a test, don't need any randomness */
+    unsigned char commit[32] = "hash of P, c, etc. all that jazz";
+    unsigned char proof[2000];
+    size_t plen = sizeof(proof);
+    secp256k1_scalar one;
+    secp256k1_bulletproof_ip_test_abgh_data abgh_data;
+    secp256k1_scratch *scratch = secp256k1_scratch_space_create(ctx, 100000 + 256 * 10);
+    size_t i;
+
+    for (i = 0; i < 4; i++) {
+        secp256k1_scalar_clear(&a_arr[i]);
+        secp256k1_scalar_clear(&b_arr[i]);
+    }
+
+    abgh_data.a_arr = a_arr;
+    abgh_data.b_arr = b_arr;
+    secp256k1_scalar_set_int(&one, 1);
+
+    CHECK(secp256k1_bulletproof_inner_product_prove_impl(&ctx->ecmult_ctx, scratch, proof, &plen, gens, &one, 4, secp256k1_bulletproof_ip_test_abgh_callback, (void *) &abgh_data, commit) == 0);
+
+    secp256k1_scratch_destroy(scratch);
+}
+
+void test_bulletproof_serialize_points_rejects_infinity(void) {
+    unsigned char out[33];
+    secp256k1_ge pt[1];
+
+    secp256k1_ge_set_infinity(&pt[0]);
+    CHECK(!secp256k1_bulletproof_serialize_points(out, pt, 1));
+}
+
 void test_bulletproof_rangeproof(size_t nbits, size_t expected_size, const secp256k1_bulletproof_generators *gens) {
     secp256k1_scalar blind;
     secp256k1_scalar blind_recovered;
     unsigned char proof[1024];
+    unsigned char proof_private_nonce[1024];
+    unsigned char proof_zero_min[1024];
     unsigned char proof2[1024];
     unsigned char proof3[1024];
     const unsigned char *proof_ptr[3];
     size_t plen = sizeof(proof);
+    size_t plen_private_nonce = sizeof(proof_private_nonce);
+    size_t plen_zero_min = sizeof(proof_zero_min);
     uint64_t v = 123456;
     uint64_t v_recovered;
     secp256k1_gej commitj;
@@ -470,11 +544,15 @@ void test_bulletproof_rangeproof(size_t nbits, size_t expected_size, const secp2
     secp256k1_pedersen_commitment pcommit;
     const secp256k1_ge *commitp_ptr[3];
     secp256k1_ge value_gen[3];
+    /* Note: it is a test, don't need any randomness */
     unsigned char nonce[32] = "my kingdom for some randomness!!";
+    unsigned char private_nonce[32] = "internal rewind private nonce!!!";
+    unsigned char proof_tampered[1024];
+    const uint64_t zero = 0;
 
     secp256k1_scratch *scratch = secp256k1_scratch_space_create(ctx, 10000000);
 
-    if (v >> nbits > 0) {
+    if ( nbits>=64 || (v >> nbits > 0) ) {
         v = 0;
     }
 
@@ -482,21 +560,25 @@ void test_bulletproof_rangeproof(size_t nbits, size_t expected_size, const secp2
     proof_ptr[1] = proof2;
     proof_ptr[2] = proof3;
 
-    secp256k1_generator_load(&value_gen[0], &secp256k1_generator_const_g);
-    secp256k1_generator_load(&value_gen[1], &secp256k1_generator_const_g);
-    secp256k1_generator_load(&value_gen[2], &secp256k1_generator_const_h);
+    CHECK(secp256k1_generator_load(&value_gen[0], &secp256k1_generator_const_g));
+    CHECK(secp256k1_generator_load(&value_gen[1], &secp256k1_generator_const_g));
+    CHECK(secp256k1_generator_load(&value_gen[2], &secp256k1_generator_const_h));
     random_scalar_order(&blind);
 
-    secp256k1_pedersen_ecmult(&commitj, &blind, v, &value_gen[0], &gens->blinding_gen[0]);
+    CHECK(secp256k1_pedersen_ecmult(&commitj, &blind, v, &value_gen[0], &gens->blinding_gen[0]));
     secp256k1_ge_set_gej(&commitp, &commitj);
-    secp256k1_pedersen_ecmult(&commitj, &blind, v, &value_gen[2], &gens->blinding_gen[0]);
+    CHECK(secp256k1_pedersen_ecmult(&commitj, &blind, v, &value_gen[2], &gens->blinding_gen[0]));
     secp256k1_ge_set_gej(&commitp2, &commitj);
     commitp_ptr[0] = commitp_ptr[1] = &commitp;
     commitp_ptr[2] = &commitp2;
-    secp256k1_pedersen_commitment_save(&pcommit, &commitp);
+    CHECK(secp256k1_pedersen_commitment_save(&pcommit, &commitp));
 
     CHECK(secp256k1_bulletproof_rangeproof_prove_impl(&ctx->ecmult_ctx, scratch, proof, &plen, NULL, NULL, nbits, &v, NULL, &blind, &commitp, 1, &value_gen[0], gens, nonce, nonce, NULL, 0, NULL) == 1);
     CHECK(plen == expected_size);
+    CHECK(secp256k1_bulletproof_rangeproof_prove_impl(&ctx->ecmult_ctx, scratch, proof_private_nonce, &plen_private_nonce, NULL, NULL, nbits, &v, NULL, &blind, &commitp, 1, &value_gen[0], gens, nonce, private_nonce, NULL, 0, NULL) == 1);
+    CHECK(plen_private_nonce == expected_size);
+    CHECK(secp256k1_bulletproof_rangeproof_prove_impl(&ctx->ecmult_ctx, scratch, proof_zero_min, &plen_zero_min, NULL, NULL, nbits, &v, &zero, &blind, &commitp, 1, &value_gen[0], gens, nonce, nonce, NULL, 0, NULL) == 1);
+    CHECK(plen_zero_min == expected_size);
     nonce[0] ^= 1;
     CHECK(secp256k1_bulletproof_rangeproof_prove_impl(&ctx->ecmult_ctx, scratch, proof2, &plen, NULL, NULL, nbits, &v, NULL, &blind, &commitp, 1, &value_gen[1], gens, nonce, nonce, NULL, 0, NULL) == 1);
     CHECK(plen == expected_size);
@@ -512,16 +594,31 @@ void test_bulletproof_rangeproof(size_t nbits, size_t expected_size, const secp2
     CHECK(secp256k1_bulletproof_rangeproof_verify_impl(&ctx->ecmult_ctx, scratch, proof_ptr, 3, plen, nbits, NULL, commitp_ptr, 1, value_gen, gens, NULL, 0) == 1);
 
     /* Rewind */
-    CHECK(secp256k1_bulletproof_rangeproof_rewind_impl(&v_recovered, &blind_recovered, proof, plen, 0, &pcommit, &secp256k1_generator_const_g, nonce, NULL, 0, NULL) == 1);
+    CHECK(secp256k1_bulletproof_rangeproof_rewind_impl(&v_recovered, &blind_recovered, proof, plen, NULL, &pcommit, &gens->blinding_gen[0], &secp256k1_generator_const_g, nonce, NULL, NULL, 0, NULL) == 1);
+    /* NULL (nothing) is not equals to zero */
+    CHECK(secp256k1_bulletproof_rangeproof_rewind_impl(&v_recovered, &blind_recovered, proof, plen, &zero, &pcommit, &gens->blinding_gen[0], &secp256k1_generator_const_g, nonce, NULL, NULL, 0, NULL) == 0);
+    CHECK(secp256k1_bulletproof_rangeproof_rewind_impl(&v_recovered, &blind_recovered, proof_zero_min, plen_zero_min, &zero, &pcommit, &gens->blinding_gen[0], &secp256k1_generator_const_g, nonce, NULL, NULL, 0, NULL) == 1);
+    CHECK(secp256k1_bulletproof_rangeproof_rewind_impl(&v_recovered, &blind_recovered, proof_zero_min, plen_zero_min, NULL, &pcommit, &gens->blinding_gen[0], &secp256k1_generator_const_g, nonce, NULL, NULL, 0, NULL) == 0);
+    CHECK(secp256k1_bulletproof_rangeproof_rewind_impl(&v_recovered, &blind_recovered, proof_private_nonce, plen_private_nonce, NULL, &pcommit, &gens->blinding_gen[0], &secp256k1_generator_const_g, nonce, private_nonce, NULL, 0, NULL) == 1);
     CHECK(v_recovered == v);
     CHECK(secp256k1_scalar_eq(&blind_recovered, &blind) == 1);
+    CHECK(secp256k1_bulletproof_rangeproof_rewind_impl(&v_recovered, &blind_recovered, proof_private_nonce, plen_private_nonce, NULL, &pcommit, &gens->blinding_gen[0], &secp256k1_generator_const_g, nonce, NULL, NULL, 0, NULL) == 1);
+    CHECK(v_recovered == v);
+    CHECK(secp256k1_scalar_eq(&blind_recovered, &blind) == 0); /* Blind shouldn't be recovered without private_nonce!!! */
+    memcpy(proof_tampered, proof, plen);
+    proof_tampered[31] ^= 1;
+    CHECK(secp256k1_bulletproof_rangeproof_rewind_impl(&v_recovered, &blind_recovered, proof_tampered, plen, NULL, &pcommit, &gens->blinding_gen[0], &secp256k1_generator_const_g, nonce, NULL, NULL, 0, NULL) == 1);
+    /* NULL (nothing) is not equals to zero, but both should fail */
+    CHECK(secp256k1_bulletproof_rangeproof_rewind_impl(&v_recovered, &blind_recovered, proof_tampered, plen, &zero, &pcommit, &gens->blinding_gen[0], &secp256k1_generator_const_g, nonce, NULL, NULL, 0, NULL) == 0);
 
     nonce[0] ^= 111;
-    CHECK(secp256k1_bulletproof_rangeproof_rewind_impl(&v_recovered, &blind_recovered, proof, plen, 0, &pcommit, &secp256k1_generator_const_g, nonce, NULL, 0, NULL) == 0);
+    CHECK(secp256k1_bulletproof_rangeproof_rewind_impl(&v_recovered, &blind_recovered, proof, plen, NULL, &pcommit, &gens->blinding_gen[0], &secp256k1_generator_const_g, nonce, NULL, NULL, 0, NULL) == 0);
+    CHECK(secp256k1_bulletproof_rangeproof_rewind_impl(&v_recovered, &blind_recovered, proof, plen, &zero, &pcommit, &gens->blinding_gen[0], &secp256k1_generator_const_g, nonce, NULL, NULL, 0, NULL) == 0);
 
     secp256k1_scratch_destroy(scratch);
 }
 
+/* It is a test, no need to validate data overflow and correctness of input parameters */
 void test_bulletproof_rangeproof_aggregate(size_t nbits, size_t n_commits, size_t expected_size, const secp256k1_bulletproof_generators *gens) {
     unsigned char proof[1024];
     const unsigned char *proof_ptr = proof;
@@ -532,30 +629,34 @@ void test_bulletproof_rangeproof_aggregate(size_t nbits, size_t n_commits, size_
     const secp256k1_ge *constptr = commitp;
     secp256k1_ge value_gen;
     unsigned char commit[32] = {0};
+    /* Note: it is a test, don't need any randomness */
     unsigned char nonce[32] = "mary, mary quite contrary how do";
     size_t i;
 
     secp256k1_scratch *scratch = secp256k1_scratch_space_create(ctx, 10000000);
 
-    secp256k1_generator_load(&value_gen, &secp256k1_generator_const_g);
+    CHECK(secp256k1_generator_load(&value_gen, &secp256k1_generator_const_g));
     for (i = 0; i < n_commits; i++) {
         secp256k1_scalar vs;
         secp256k1_gej commitj;
 
         v[i] = 223 * i; /* dice-roll random # */
-        if (v[i] >> nbits > 0) {
+        if (nbits < 64 && v[i] >> nbits > 0) {
             v[i] = 0;
         }
         secp256k1_scalar_set_u64(&vs, v[i]);
         random_scalar_order(&blind[i]);
-        secp256k1_pedersen_ecmult(&commitj, &blind[i], v[i], &value_gen, &gens->blinding_gen[0]);
+        CHECK(secp256k1_pedersen_ecmult(&commitj, &blind[i], v[i], &value_gen, &gens->blinding_gen[0]));
+        CHECK(!secp256k1_gej_is_infinity(&commitj));
         secp256k1_ge_set_gej(&commitp[i], &commitj);
 
-        secp256k1_bulletproof_update_commit(commit, &commitp[i], &value_gen);
+        CHECK(secp256k1_bulletproof_update_commit(commit, &commitp[i], &value_gen));
     }
 
+    /* It is a test, aceeptable to call internal function, not a wrapper */
     CHECK(secp256k1_bulletproof_rangeproof_prove_impl(&ctx->ecmult_ctx, scratch, proof, &plen, NULL, NULL, nbits, v, NULL, blind, commitp, n_commits, &value_gen, gens, nonce, nonce, NULL, 0, NULL) == 1);
     CHECK(plen == expected_size);
+    /* It is a test, aceeptable to call internal function, not a wrapper */
     CHECK(secp256k1_bulletproof_rangeproof_verify_impl(&ctx->ecmult_ctx, scratch, &proof_ptr, 1, plen, nbits, NULL, &constptr, n_commits, &value_gen, gens, NULL, 0) == 1);
 
     secp256k1_scratch_destroy(scratch);
@@ -648,6 +749,9 @@ void run_bulletproofs_tests(void) {
     test_bulletproof_inner_product(2, gens);
     test_bulletproof_inner_product(4, gens);
     test_bulletproof_inner_product(8, gens);
+    test_bulletproof_inner_product_rejects_infinity_points(gens);
+    test_bulletproof_serialize_points_rejects_infinity();
+    /* It is a test,  signed-to-unsigned conversion on the global `count` is accepted */
     for (i = 0; i < (size_t) count; i++) {
         test_bulletproof_inner_product(32, gens);
         test_bulletproof_inner_product(64, gens);

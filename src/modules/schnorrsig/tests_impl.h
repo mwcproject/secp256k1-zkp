@@ -38,7 +38,7 @@ void test_schnorrsig_api(secp256k1_scratch_space *scratch) {
     secp256k1_context *sign = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
     secp256k1_context *vrfy = secp256k1_context_create(SECP256K1_CONTEXT_VERIFY);
     secp256k1_context *both = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
-    int ecount;
+    int32_t ecount;
 
     secp256k1_context_set_error_callback(none, counting_illegal_callback_fn, &ecount);
     secp256k1_context_set_error_callback(sign, counting_illegal_callback_fn, &ecount);
@@ -119,7 +119,7 @@ void test_schnorrsig_api(secp256k1_scratch_space *scratch) {
     CHECK(ecount == 5);
     CHECK(secp256k1_schnorrsig_verify_batch(vrfy, scratch, &sigptr, &msgptr, &pkptr, (size_t)1 << (sizeof(size_t)*8-1)) == 0);
     CHECK(ecount == 6);
-    CHECK(secp256k1_schnorrsig_verify_batch(vrfy, scratch, &sigptr, &msgptr, &pkptr, 1 << 31) == 0);
+    CHECK(secp256k1_schnorrsig_verify_batch(vrfy, scratch, &sigptr, &msgptr, &pkptr, (size_t)1 << 31) == 0);
     CHECK(ecount == 7);
 
     secp256k1_context_destroy(none);
@@ -130,13 +130,19 @@ void test_schnorrsig_api(secp256k1_scratch_space *scratch) {
 
 /* Helper function for schnorrsig_bip_vectors
  * Signs the message and checks that it's the same as expected_sig. */
+static int nonce_function_bipschnorr_untagged(unsigned char *nonce32, const unsigned char *msg32, const unsigned char *key32, const unsigned char *algo16, void *data, unsigned int counter) {
+    (void) algo16;
+    (void) data;
+    return secp256k1_nonce_function_bipschnorr(nonce32, msg32, key32, NULL, NULL, counter);
+}
+
 void test_schnorrsig_bip_vectors_check_signing(const unsigned char *sk, const unsigned char *pk_serialized, const unsigned char *msg, const unsigned char *expected_sig, const int expected_nonce_is_negated) {
     secp256k1_schnorrsig sig;
     unsigned char serialized_sig[64];
     secp256k1_pubkey pk;
     int nonce_is_negated;
 
-    CHECK(secp256k1_schnorrsig_sign(ctx, &sig, &nonce_is_negated, msg, sk, NULL, NULL));
+    CHECK(secp256k1_schnorrsig_sign(ctx, &sig, &nonce_is_negated, msg, sk, nonce_function_bipschnorr_untagged, NULL));
     CHECK(nonce_is_negated == expected_nonce_is_negated);
     CHECK(secp256k1_schnorrsig_serialize(ctx, serialized_sig, &sig));
     CHECK(memcmp(serialized_sig, expected_sig, 64) == 0);
@@ -633,12 +639,40 @@ static int nonce_function_0(unsigned char *nonce32, const unsigned char *msg32, 
     return 1;
 }
 
+typedef struct {
+    int algo16_is_null;
+} nonce_function_passthrough_data;
+
+static int nonce_function_bipschnorr_tagged(unsigned char *nonce32, const unsigned char *msg32, const unsigned char *key32, const unsigned char *algo16, void *data, unsigned int counter) {
+    (void) algo16;
+    (void) data;
+    return secp256k1_nonce_function_bipschnorr(nonce32, msg32, key32, secp256k1_schnorrsig_algo16, NULL, counter);
+}
+
+static int nonce_function_bipschnorr_passthrough(unsigned char *nonce32, const unsigned char *msg32, const unsigned char *key32, const unsigned char *algo16, void *data, unsigned int counter) {
+    nonce_function_passthrough_data *passthrough = (nonce_function_passthrough_data *) data;
+    passthrough->algo16_is_null = (algo16 == NULL);
+    return secp256k1_nonce_function_bipschnorr(nonce32, msg32, key32, algo16, NULL, counter);
+}
+
 void test_schnorrsig_sign(void) {
     unsigned char sk[32];
     const unsigned char msg[32] = "this is a msg for a schnorrsig..";
+    unsigned char aux_rand[32];
+    unsigned char aux_rand_2[32];
     secp256k1_schnorrsig sig;
+    secp256k1_schnorrsig sig_default;
+    secp256k1_schnorrsig sig_default_with_aux;
+    secp256k1_schnorrsig sig_default_with_aux_2;
+    secp256k1_schnorrsig sig_explicit;
+    secp256k1_schnorrsig sig_explicit_with_aux;
+    secp256k1_schnorrsig sig_tagged;
+    secp256k1_schnorrsig sig_passthrough;
+    nonce_function_passthrough_data passthrough;
 
     memset(sk, 23, sizeof(sk));
+    memset(aux_rand, 1, sizeof(aux_rand));
+    memset(aux_rand_2, 2, sizeof(aux_rand_2));
     CHECK(secp256k1_schnorrsig_sign(ctx, &sig, NULL, msg, sk, NULL, NULL) == 1);
 
     /* Overflowing secret key */
@@ -648,6 +682,22 @@ void test_schnorrsig_sign(void) {
 
     CHECK(secp256k1_schnorrsig_sign(ctx, &sig, NULL, msg, sk, nonce_function_failing, NULL) == 0);
     CHECK(secp256k1_schnorrsig_sign(ctx, &sig, NULL, msg, sk, nonce_function_0, NULL) == 0);
+
+    CHECK(secp256k1_schnorrsig_sign(ctx, &sig_default, NULL, msg, sk, NULL, NULL) == 1);
+    CHECK(secp256k1_schnorrsig_sign(ctx, &sig_default_with_aux, NULL, msg, sk, NULL, aux_rand) == 1);
+    CHECK(secp256k1_schnorrsig_sign(ctx, &sig_default_with_aux_2, NULL, msg, sk, NULL, aux_rand_2) == 1);
+    CHECK(secp256k1_schnorrsig_sign(ctx, &sig_explicit, NULL, msg, sk, secp256k1_nonce_function_bipschnorr, NULL) == 1);
+    CHECK(secp256k1_schnorrsig_sign(ctx, &sig_explicit_with_aux, NULL, msg, sk, secp256k1_nonce_function_bipschnorr, aux_rand) == 1);
+    CHECK(secp256k1_schnorrsig_sign(ctx, &sig_tagged, NULL, msg, sk, nonce_function_bipschnorr_tagged, NULL) == 1);
+    passthrough.algo16_is_null = 0;
+    CHECK(secp256k1_schnorrsig_sign(ctx, &sig_passthrough, NULL, msg, sk, nonce_function_bipschnorr_passthrough, &passthrough) == 1);
+    CHECK(passthrough.algo16_is_null == 1);
+    CHECK(memcmp(&sig_default, &sig_explicit, sizeof(sig_default)) == 0);
+    CHECK(memcmp(&sig_default, &sig_default_with_aux, sizeof(sig_default)) != 0);
+    CHECK(memcmp(&sig_default_with_aux, &sig_default_with_aux_2, sizeof(sig_default)) != 0);
+    CHECK(memcmp(&sig_default_with_aux, &sig_explicit_with_aux, sizeof(sig_default)) == 0);
+    CHECK(memcmp(&sig_default, &sig_tagged, sizeof(sig_default)) == 0);
+    CHECK(memcmp(&sig_default, &sig_passthrough, sizeof(sig_default)) != 0);
 }
 
 #define N_SIGS  200

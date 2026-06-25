@@ -110,13 +110,14 @@ static void secp256k1_ge_set_gej(secp256k1_ge *r, secp256k1_gej *a) {
     r->y = a->y;
 }
 
-static void secp256k1_ge_set_gej_var(secp256k1_ge *r, secp256k1_gej *a) {
+static int secp256k1_ge_set_gej_var(secp256k1_ge *r, secp256k1_gej *a) {
     secp256k1_fe z2, z3;
     r->infinity = a->infinity;
     if (a->infinity) {
-        return;
+        return 1;
     }
-    secp256k1_fe_inv_var(&a->z, &a->z);
+    if (!secp256k1_fe_inv_var(&a->z, &a->z))
+        return 0;
     secp256k1_fe_sqr(&z2, &a->z);
     secp256k1_fe_mul(&z3, &a->z, &z2);
     secp256k1_fe_mul(&a->x, &a->x, &z2);
@@ -124,9 +125,10 @@ static void secp256k1_ge_set_gej_var(secp256k1_ge *r, secp256k1_gej *a) {
     secp256k1_fe_set_int(&a->z, 1);
     r->x = a->x;
     r->y = a->y;
+    return 1;
 }
 
-static void secp256k1_ge_set_all_gej_var(secp256k1_ge *r, const secp256k1_gej *a, size_t len) {
+static int secp256k1_ge_set_all_gej_var(secp256k1_ge *r, const secp256k1_gej *a, size_t len) {
     secp256k1_fe u;
     size_t i;
     size_t last_i = SIZE_MAX;
@@ -143,9 +145,11 @@ static void secp256k1_ge_set_all_gej_var(secp256k1_ge *r, const secp256k1_gej *a
         }
     }
     if (last_i == SIZE_MAX) {
-        return;
+        return 1;
     }
-	secp256k1_fe_inv_var(&u, &r[last_i].x);
+	if (!secp256k1_fe_inv_var(&u, &r[last_i].x)) {
+	    return 0;
+	}
 	
 	i = last_i;
     while (i > 0) {
@@ -156,7 +160,9 @@ static void secp256k1_ge_set_all_gej_var(secp256k1_ge *r, const secp256k1_gej *a
             last_i = i;
         }
     }
-    VERIFY_CHECK(!a[last_i].infinity);
+    if (a[last_i].infinity) {
+        return 0;
+    }
     r[last_i].x = u;
 
     for (i = 0; i < len; i++) {
@@ -165,6 +171,7 @@ static void secp256k1_ge_set_all_gej_var(secp256k1_ge *r, const secp256k1_gej *a
             secp256k1_ge_set_gej_zinv(&r[i], &a[i], &r[i].x);
         }
     }
+    return 1;
 }
 
 static void secp256k1_ge_globalz_set_table_gej(size_t len, secp256k1_ge *r, secp256k1_fe *globalz, const secp256k1_gej *a, const secp256k1_fe *zr) {
@@ -269,7 +276,12 @@ static int secp256k1_gej_is_infinity(const secp256k1_gej *a) {
 
 static int secp256k1_gej_is_valid_var(const secp256k1_gej *a) {
     secp256k1_fe y2, x3, z2, z6;
+    secp256k1_fe z;
     if (a->infinity) {
+        return 0;
+    }
+    z = a->z;
+    if (secp256k1_fe_normalizes_to_zero_var(&z)) {
         return 0;
     }
     /** y^2 = x^3 + 7
@@ -686,8 +698,12 @@ static void secp256k1_ge_mul_lambda(secp256k1_ge *r, const secp256k1_ge *a) {
 }
 #endif
 
-static int secp256k1_gej_has_quad_y_var(const secp256k1_gej *a) {
+static int secp256k1_gej_has_quad_y_var(const secp256k1_gej *a, int * err) {
     secp256k1_fe yz;
+    int res;
+
+    if (*err)
+        return 0;
 
     if (a->infinity) {
         return 0;
@@ -697,7 +713,11 @@ static int secp256k1_gej_has_quad_y_var(const secp256k1_gej *a) {
      * that of a->z. Thus a->y / a->z^3 is a quadratic residue iff a->y * a->z
        is */
     secp256k1_fe_mul(&yz, &a->y, &a->z);
-    return secp256k1_fe_is_quad_var(&yz);
+    res = secp256k1_fe_is_quad_var(&yz, err);
+    if (*err)
+        return 0;
+
+    return res;
 }
 
 #endif /* SECP256K1_GROUP_IMPL_H */

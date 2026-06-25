@@ -210,12 +210,12 @@ SECP256K1_API secp256k1_context* secp256k1_context_create(
  *  called at most once for every call of this function. If you need to avoid dynamic
  *  memory allocation entirely, see the functions in secp256k1_preallocated.h.
  *
- *  Returns: a newly created context object.
+ *  Returns: a newly created context object. NULL on error
  *  Args:    ctx: an existing context to copy (cannot be NULL)
  */
 SECP256K1_API secp256k1_context* secp256k1_context_clone(
     const secp256k1_context* ctx
-) SECP256K1_ARG_NONNULL(1) SECP256K1_WARN_UNUSED_RESULT;
+) SECP256K1_WARN_UNUSED_RESULT;
 
 /** Destroy a secp256k1 context object (created in dynamically allocated memory).
  *
@@ -257,7 +257,7 @@ SECP256K1_API void secp256k1_context_destroy(
 SECP256K1_API void secp256k1_context_set_illegal_callback(
     secp256k1_context* ctx,
     void (*fun)(const char* message, void* data),
-    const void* data
+    void* data
 ) SECP256K1_ARG_NONNULL(1);
 
 /** Set a callback function to be called when an internal consistency check
@@ -279,7 +279,7 @@ SECP256K1_API void secp256k1_context_set_illegal_callback(
 SECP256K1_API void secp256k1_context_set_error_callback(
     secp256k1_context* ctx,
     void (*fun)(const char* message, void* data),
-    const void* data
+    void* data
 ) SECP256K1_ARG_NONNULL(1);
 
 /** Create a secp256k1 scratch space object.
@@ -325,7 +325,7 @@ SECP256K1_API SECP256K1_WARN_UNUSED_RESULT int secp256k1_ec_pubkey_parse(
 
 /** Serialize a pubkey object into a serialized byte sequence.
  *
- *  Returns: 1 always.
+ *  Returns: 1 on success, 0 on failure.
  *  Args:   ctx:        a secp256k1 context object.
  *  Out:    output:     a pointer to a 65-byte (if compressed==0) or 33-byte (if
  *                      compressed==1) byte array to place the serialized key
@@ -391,7 +391,8 @@ SECP256K1_API int secp256k1_ecdsa_signature_parse_der(
 
 /** Serialize an ECDSA signature in DER format.
  *
- *  Returns: 1 if enough space was available to serialize, 0 otherwise
+ *  Returns: 1 if enough space was available to serialize and the signature
+ *              object is well-formed, 0 otherwise
  *  Args:   ctx:       a secp256k1 context object
  *  Out:    output:    a pointer to an array to store the DER serialization
  *  In/Out: outputlen: a pointer to a length integer. Initially, this integer
@@ -409,7 +410,7 @@ SECP256K1_API int secp256k1_ecdsa_signature_serialize_der(
 
 /** Serialize an ECDSA signature in compact (64 byte) format.
  *
- *  Returns: 1
+ *  Returns: 1 if the signature object is well-formed, 0 otherwise
  *  Args:   ctx:       a secp256k1 context object
  *  Out:    output64:  a pointer to a 64-byte array to store the compact serialization
  *  In:     sig:       a pointer to an initialized signature object
@@ -449,7 +450,9 @@ SECP256K1_API SECP256K1_WARN_UNUSED_RESULT int secp256k1_ecdsa_verify(
 
 /** Convert a signature to a normalized lower-S form.
  *
- *  Returns: 1 if sigin was not normalized, 0 if it already was.
+ *  Returns: 2 if sigin was not normalized
+ *           1 if it already was
+ *           0 if the signature object is malformed
  *  Args: ctx:    a secp256k1 context object
  *  Out:  sigout: a pointer to a signature to fill with the normalized form,
  *                or copy if the input was already normalized. (can be NULL if
@@ -524,7 +527,7 @@ SECP256K1_API int secp256k1_ecdsa_sign(
     const unsigned char *msg32,
     const unsigned char *seckey,
     secp256k1_nonce_function noncefp,
-    const void *ndata
+    void *ndata
 ) SECP256K1_ARG_NONNULL(1) SECP256K1_ARG_NONNULL(2) SECP256K1_ARG_NONNULL(3) SECP256K1_ARG_NONNULL(4);
 
 /** Verify an ECDSA secret key.
@@ -595,6 +598,13 @@ SECP256K1_API SECP256K1_WARN_UNUSED_RESULT int secp256k1_ec_privkey_tweak_add(
  *          uniformly random 32-byte arrays, or if the resulting public key
  *          would be invalid (only when the tweak is the complement of the
  *          corresponding private key). 1 otherwise.
+ *
+ * The tweak is processed using an implementation whose control flow and table
+ * accesses depend on the tweak value. As a result, this function should only
+ * be used with public tweak values. If the tweak is secret or derived from
+ * secret material, this call may leak information via timing or cache side
+ * channels. This caveat also applies when compiled with USE_ENDOMORPHISM.
+ *
  * Args:    ctx:    pointer to a context object initialized for validation
  *                  (cannot be NULL).
  * In/Out:  pubkey: pointer to a public key object.
@@ -622,6 +632,13 @@ SECP256K1_API SECP256K1_WARN_UNUSED_RESULT int secp256k1_ec_privkey_tweak_mul(
 /** Tweak a public key by multiplying it by a tweak value.
  * Returns: 0 if the tweak was out of range (chance of around 1 in 2^128 for
  *          uniformly random 32-byte arrays, or equal to zero. 1 otherwise.
+ *
+ * The tweak is processed using an implementation whose control flow and table
+ * accesses depend on the tweak value. As a result, this function should only
+ * be used with public tweak values. If the tweak is secret or derived from
+ * secret material, this call may leak information via timing or cache side
+ * channels. This caveat also applies when compiled with USE_ENDOMORPHISM.
+ *
  * Args:    ctx:    pointer to a context object initialized for validation
  *                 (cannot be NULL).
  * In/Out:  pubkey: pointer to a public key obkect.
@@ -680,7 +697,7 @@ SECP256K1_API SECP256K1_WARN_UNUSED_RESULT int secp256k1_ec_pubkey_combine(
 ) SECP256K1_ARG_NONNULL(2) SECP256K1_ARG_NONNULL(3);
 
 /** Tweak a private key by inverting it.
- * Returns: 0 if the input was out of range. 1 otherwise.
+ * Returns: 0 if the input was zero or out of range. 1 otherwise.
  * Args:   ctx:    pointer to a context object (cannot be NULL).
  * In/Out: seckey: pointer to a 32-byte private key.
  */

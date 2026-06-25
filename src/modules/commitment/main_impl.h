@@ -26,19 +26,33 @@ static const secp256k1_generator secp256k1_generator_h_internal = {{
 
 const secp256k1_generator *secp256k1_generator_h = &secp256k1_generator_h_internal;
 
-static void secp256k1_pedersen_commitment_load(secp256k1_ge* ge, const secp256k1_pedersen_commitment* commit) {
+static int secp256k1_pedersen_commitment_load(secp256k1_ge* ge, const secp256k1_pedersen_commitment* commit) {
     secp256k1_fe fe;
-    secp256k1_fe_set_b32(&fe, &commit->data[1]);
-    secp256k1_ge_set_xquad(ge, &fe);
+    if (!secp256k1_fe_set_b32(&fe, &commit->data[1]))
+        return 0;
+    if (!secp256k1_ge_set_xquad(ge, &fe))
+        return 0;
     if (commit->data[0] & 1) {
         secp256k1_ge_neg(ge, ge);
     }
+
+    return 1;
 }
 
-static void secp256k1_pedersen_commitment_save(secp256k1_pedersen_commitment* commit, secp256k1_ge* ge) {
+/* Note, only 33 bytes of a 64-byte opaque secp256k1_pedersen_commitment object  commit->data are initialized
+ *              It is expected by callers
+ * Return 1 on success and 0 on failure. In case of failure commit data will be corrupted (partial change)   */
+static int secp256k1_pedersen_commitment_save(secp256k1_pedersen_commitment* commit, secp256k1_ge* ge) {
+    int err = 0;
+    int res;
+
     secp256k1_fe_normalize(&ge->x);
     secp256k1_fe_get_b32(&commit->data[1], &ge->x);
-    commit->data[0] = 9 ^ secp256k1_fe_is_quad_var(&ge->y);
+    res = secp256k1_fe_is_quad_var(&ge->y, &err);
+    if (err)
+        return 0;
+    commit->data[0] = 9 ^ res;
+    return 1;
 }
 
 int secp256k1_pedersen_commitment_parse(const secp256k1_context* ctx, secp256k1_pedersen_commitment* commit, const unsigned char *input) {
@@ -58,20 +72,29 @@ int secp256k1_pedersen_commitment_parse(const secp256k1_context* ctx, secp256k1_
     if (input[0] & 1) {
         secp256k1_ge_neg(&ge, &ge);
     }
-    secp256k1_pedersen_commitment_save(commit, &ge);
+    if (!secp256k1_pedersen_commitment_save(commit, &ge)) {
+        return 0;
+    }
     return 1;
 }
 
 int secp256k1_pedersen_commitment_serialize(const secp256k1_context* ctx, unsigned char *output, const secp256k1_pedersen_commitment* commit) {
     secp256k1_ge ge;
+    int err = 0;
+    int res;
 
     VERIFY_CHECK(ctx != NULL);
     ARG_CHECK(output != NULL);
     ARG_CHECK(commit != NULL);
 
-    secp256k1_pedersen_commitment_load(&ge, commit);
+    if (!secp256k1_pedersen_commitment_load(&ge, commit))
+        return 0;
 
-    output[0] = 9 ^ secp256k1_fe_is_quad_var(&ge.y);
+    res = secp256k1_fe_is_quad_var(&ge.y, &err);
+    if (err)
+        return 0;
+
+    output[0] = 9 ^ res;
     secp256k1_fe_normalize_var(&ge.x);
     secp256k1_fe_get_b32(&output[1], &ge.x);
     return 1;
@@ -91,15 +114,22 @@ int secp256k1_pedersen_commit(const secp256k1_context* ctx, secp256k1_pedersen_c
     ARG_CHECK(blind != NULL);
     ARG_CHECK(value_gen != NULL);
     ARG_CHECK(blind_gen != NULL);
-    secp256k1_generator_load(&value_genp, value_gen);
-    secp256k1_generator_load(&blind_genp, blind_gen);
+    if (!secp256k1_generator_load(&value_genp, value_gen))
+        return 0;
+    if (!secp256k1_ge_is_valid_var(&value_genp))
+        return 0;
+    if (!secp256k1_generator_load(&blind_genp, blind_gen))
+        return 0;
+    if (!secp256k1_ge_is_valid_var(&blind_genp))
+        return 0;
+
     secp256k1_scalar_set_b32(&sec, blind, &overflow);
     if (!overflow) {
-        secp256k1_pedersen_ecmult(&rj, &sec, value, &value_genp, &blind_genp);
+        if (!secp256k1_pedersen_ecmult(&rj, &sec, value, &value_genp, &blind_genp))
+            return 0;
         if (!secp256k1_gej_is_infinity(&rj)) {
             secp256k1_ge_set_gej(&r, &rj);
-            secp256k1_pedersen_commitment_save(commit, &r);
-            ret = 1;
+            ret = secp256k1_pedersen_commitment_save(commit, &r);
         }
         secp256k1_gej_clear(&rj);
         secp256k1_ge_clear(&r);
@@ -125,21 +155,27 @@ int secp256k1_pedersen_blind_commit(const secp256k1_context* ctx, secp256k1_pede
     ARG_CHECK(value != NULL);
     ARG_CHECK(value_gen != NULL);
     ARG_CHECK(blind_gen != NULL);
-    secp256k1_generator_load(&value_genp, value_gen);
-    secp256k1_generator_load(&blind_genp, blind_gen);
+    if (!secp256k1_generator_load(&value_genp, value_gen))
+        return 0;
+    if (!secp256k1_ge_is_valid_var(&value_genp))
+        return 0;
+    if (!secp256k1_generator_load(&blind_genp, blind_gen))
+        return 0;
+    if (!secp256k1_ge_is_valid_var(&blind_genp))
+        return 0;
     secp256k1_scalar_set_b32(&sec, blind, &overflow);
     secp256k1_scalar_set_b32(&sec2, value, &overflow2);
     if (!overflow && !overflow2) {
-        secp256k1_pedersen_blind_ecmult(&rj, &sec, &sec2, &value_genp, &blind_genp);
-        if (!secp256k1_gej_is_infinity(&rj)) {
+        ret = secp256k1_pedersen_blind_ecmult(&rj, &sec, &sec2, &value_genp, &blind_genp);
+        if (ret && !secp256k1_gej_is_infinity(&rj)) {
             secp256k1_ge_set_gej(&r, &rj);
-            secp256k1_pedersen_commitment_save(commit, &r);
-            ret = 1;
+            ret = secp256k1_pedersen_commitment_save(commit, &r);
         }
         secp256k1_gej_clear(&rj);
         secp256k1_ge_clear(&r);
     }
     secp256k1_scalar_clear(&sec);
+    secp256k1_scalar_clear(&sec2);
     return ret;
 }
 
@@ -152,8 +188,12 @@ int secp256k1_pedersen_commitment_to_pubkey(const secp256k1_context* ctx, secp25
     memset(pubkey, 0, sizeof(*pubkey));
     ARG_CHECK(commit != NULL);
 
-    secp256k1_fe_set_b32(&fe, &commit->data[1]);
-    secp256k1_ge_set_xquad(&Q, &fe);
+    if (!secp256k1_fe_set_b32(&fe, &commit->data[1])) {
+        return 0;
+    }
+    if (!secp256k1_ge_set_xquad(&Q, &fe)) {
+        return 0;
+    }
     if (commit->data[0] & 1) {
         secp256k1_ge_neg(&Q, &Q);
     }
@@ -170,8 +210,12 @@ int secp256k1_pubkey_to_pedersen_commitment(const secp256k1_context* ctx, secp25
     memset(commit, 0, sizeof(*commit));
     ARG_CHECK(pubkey != NULL);
 
-    secp256k1_pubkey_load(ctx, &P, pubkey);
-    secp256k1_pedersen_commitment_save(commit, &P);
+    if (!secp256k1_pubkey_load(ctx, &P, pubkey)) {
+        return 0;
+    }
+    if (!secp256k1_pedersen_commitment_save(commit, &P)) {
+        return 0;
+    }
 
     secp256k1_ge_clear(&P);
     return 1;
@@ -192,6 +236,9 @@ int secp256k1_pedersen_blind_sum(const secp256k1_context* ctx, unsigned char *bl
     (void) ctx;
     secp256k1_scalar_set_int(&acc, 0);
     for (i = 0; i < n; i++) {
+        if (blinds[i]==NULL) {
+            return 0;
+        }
         secp256k1_scalar_set_b32(&x, blinds[i], &overflow);
         if (overflow) {
             return 0;
@@ -221,19 +268,28 @@ int secp256k1_pedersen_commit_sum(const secp256k1_context* ctx, secp256k1_peders
     (void) ctx;
     secp256k1_gej_set_infinity(&accj);
     for (i = 0; i < ncnt; i++) {
-        secp256k1_pedersen_commitment_load(&add, ncommits[i]);
+        if (ncommits[i]==NULL) {
+            return 0;
+        }
+        if (!secp256k1_pedersen_commitment_load(&add, ncommits[i])) {
+            return 0;
+        }
         secp256k1_gej_add_ge_var(&accj, &accj, &add, NULL);
     }
     secp256k1_gej_neg(&accj, &accj);
     for (i = 0; i < pcnt; i++) {
-        secp256k1_pedersen_commitment_load(&add, commits[i]);
+        if (commits[i]==NULL) {
+            return 0;
+        }
+        if (!secp256k1_pedersen_commitment_load(&add, commits[i])) {
+            return 0;
+        }
         secp256k1_gej_add_ge_var(&accj, &accj, &add, NULL);
     }
     if (!secp256k1_gej_is_infinity(&accj)) {
         secp256k1_ge acc;
         secp256k1_ge_set_gej(&acc, &accj);
-        secp256k1_pedersen_commitment_save(commit_out, &acc);
-        ret = 1;
+        ret = secp256k1_pedersen_commitment_save(commit_out, &acc);
     }
     return ret;
 }
@@ -249,12 +305,22 @@ int secp256k1_pedersen_verify_tally(const secp256k1_context* ctx, const secp256k
     (void) ctx;
     secp256k1_gej_set_infinity(&accj);
     for (i = 0; i < n_neg; i++) {
-        secp256k1_pedersen_commitment_load(&add, neg[i]);
+        if (neg[i] == NULL) {
+            return 0;
+        }
+        if (!secp256k1_pedersen_commitment_load(&add, neg[i])) {
+            return 0;
+        }
         secp256k1_gej_add_ge_var(&accj, &accj, &add, NULL);
     }
     secp256k1_gej_neg(&accj, &accj);
     for (i = 0; i < n_pos; i++) {
-        secp256k1_pedersen_commitment_load(&add, pos[i]);
+        if (pos[i] == NULL) {
+            return 0;
+        }
+        if (!secp256k1_pedersen_commitment_load(&add, pos[i])) {
+            return 0;
+        }
         secp256k1_gej_add_ge_var(&accj, &accj, &add, NULL);
     }
     return secp256k1_gej_is_infinity(&accj);
@@ -280,6 +346,14 @@ int secp256k1_pedersen_blind_generator_blind_sum(const secp256k1_context* ctx, c
     for (i = 0; i < n_total; i++) {
         int overflow = 0;
         secp256k1_scalar addend;
+
+        if (generator_blind[i]==NULL || blinding_factor[i]==NULL) {
+            secp256k1_scalar_clear(&tmp);
+            secp256k1_scalar_clear(&addend);
+            secp256k1_scalar_clear(&sum);
+            return 0;
+        }
+
         secp256k1_scalar_set_u64(&addend, value[i]);  /* s = v */
 
         secp256k1_scalar_set_b32(&tmp, generator_blind[i], &overflow);
@@ -314,7 +388,9 @@ int secp256k1_pedersen_blind_generator_blind_sum(const secp256k1_context* ctx, c
     return 1;
 }
 
-/* Generates a blinding key that contains a hashed switch commitment. */
+/* Generates a blinding key that contains a hashed switch commitment.
+ * Note: observable control-flow and memory-access side channels are expected here
+ */
 int secp256k1_blind_switch(const secp256k1_context* ctx, unsigned char* blind_switch, const unsigned char* blind, uint64_t value, const secp256k1_generator* value_gen, const secp256k1_generator* blind_gen, const secp256k1_pubkey* switch_pubkey) {
     secp256k1_sha256 hasher;
     secp256k1_pedersen_commitment commit;
@@ -331,6 +407,7 @@ int secp256k1_blind_switch(const secp256k1_context* ctx, unsigned char* blind_sw
     ARG_CHECK(value_gen != NULL);
     ARG_CHECK(blind_gen != NULL);
     ARG_CHECK(switch_pubkey != NULL);
+    ARG_CHECK(secp256k1_ecmult_context_is_built(&ctx->ecmult_ctx));
 
     secp256k1_sha256_initialize(&hasher);
     /* xG + vH */

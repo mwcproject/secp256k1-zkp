@@ -21,6 +21,7 @@ typedef struct {
     uint64_t v;
 } bench_rangeproof_t;
 
+/* Note, this a benchmark, so no security requirements is applicable here. */
 static void bench_rangeproof_setup(void* arg) {
     int i;
     uint64_t minv;
@@ -43,8 +44,12 @@ static void bench_rangeproof(void* arg) {
         int j;
         uint64_t minv;
         uint64_t maxv;
+        /* Proof result is discarded because it is a benchmark that is updating proof data that might make proof invalid
+         * So the verify result can be any value. */
         j = secp256k1_rangeproof_verify(data->ctx, &minv, &maxv, &data->commit, data->proof, data->len, NULL, 0, &secp256k1_generator_const_h);
+        (void) j;
         for (j = 0; j < 4; j++) {
+            /* No data validaiton is accepted, it is a benchmark, low security standards */
             data->proof[j + 2 + 32 *((data->min_bits + 1) >> 1) - 4] = (i >> 8)&255;
         }
     }

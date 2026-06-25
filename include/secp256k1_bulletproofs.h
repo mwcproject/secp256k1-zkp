@@ -70,7 +70,7 @@ SECP256K1_WARN_UNUSED_RESULT SECP256K1_API int secp256k1_bulletproof_rangeproof_
     size_t extra_commit_len
 ) SECP256K1_ARG_NONNULL(1) SECP256K1_ARG_NONNULL(2) SECP256K1_ARG_NONNULL(3) SECP256K1_ARG_NONNULL(4) SECP256K1_ARG_NONNULL(7) SECP256K1_ARG_NONNULL(10);
 
-/** Batch-verifies multiple bulletproof (aggregate) rangeproofs of the same size using same generator
+/** Batch-verifies multiple bulletproof (aggregate) rangeproofs of the same size using generators from value_gen.
  *  Returns: 1: all rangeproofs were valid
  *           0: some rangeproof was invalid, or out of memory
  *  Args:       ctx: pointer to a context object initialized for verification (cannot be NULL)
@@ -83,7 +83,7 @@ SECP256K1_WARN_UNUSED_RESULT SECP256K1_API int secp256k1_bulletproof_rangeproof_
  *           commit: array of arrays of pedersen commitment that the rangeproofs is over (cannot be NULL)
  *        n_commits: number of commitments in each element of the above array (cannot be 0)
  *            nbits: number of bits in each proof
- *        value_gen: generator multiplied by value in pedersen commitments (cannot be NULL)
+ *        value_gen: array of generators multiplied by value in pedersen commitments (cannot be NULL)
  *     extra_commit: additonal data committed to by the rangeproof (may be NULL if `extra_commit_len` is 0)
  *     extra_commit_len: array of lengths of additional data
  */
@@ -111,10 +111,13 @@ SECP256K1_WARN_UNUSED_RESULT SECP256K1_API int secp256k1_bulletproof_rangeproof_
  *            blind: pointer to 32-byte array for blinding factor to be extracted
  *  In:       proof: byte-serialized rangeproof (cannot be NULL)
  *             plen: length of every individual proof
- *        min_value: minimum value that the proof ranges over
+ *        min_value: minimum value that the proof ranges over, or NULL for all-zeroes (same as at secp256k1_bulletproof_rangeproof_prove)
  *           commit: pedersen commitment that the rangeproof is over (cannot be NULL)
  *        value_gen: generator multiplied by value in pedersen commitments (cannot be NULL)
+ *        blind_gen: generator multiplied by the blinding factor in pedersen commitments (cannot be NULL)
  *            nonce: random 32-byte seed used to derive blinding factors (cannot be NULL)
+ *    private_nonce: random 32-byte seed used to derive private blinding factors from commit. If it is defined, function will
+ *                   validate taux and mu against the commit (extra layer of validation). Note, Usually private_nonce is unknown
  *     extra_commit: additional data committed to by the rangeproof
  * extra_commit_len: length of additional data
  *          message: optional 20 bytes of message to recover
@@ -125,14 +128,16 @@ SECP256K1_WARN_UNUSED_RESULT SECP256K1_API int secp256k1_bulletproof_rangeproof_
     unsigned char* blind,
     const unsigned char* proof,
     size_t plen,
-    uint64_t min_value,
+    const uint64_t * min_value,
     const secp256k1_pedersen_commitment* commit,
     const secp256k1_generator* value_gen,
+    const secp256k1_generator* blind_gen,
     const unsigned char* nonce,
+    const unsigned char* private_nonce,
     const unsigned char* extra_commit,
     size_t extra_commit_len,
     unsigned char* message
-) SECP256K1_ARG_NONNULL(1) SECP256K1_ARG_NONNULL(2) SECP256K1_ARG_NONNULL(3) SECP256K1_ARG_NONNULL(4) SECP256K1_ARG_NONNULL(7) SECP256K1_ARG_NONNULL(8);
+) SECP256K1_ARG_NONNULL(1) SECP256K1_ARG_NONNULL(2) SECP256K1_ARG_NONNULL(3) SECP256K1_ARG_NONNULL(4) SECP256K1_ARG_NONNULL(7) SECP256K1_ARG_NONNULL(8) SECP256K1_ARG_NONNULL(9);
 
 /** Produces an aggregate Bulletproof rangeproof for a set of Pedersen commitments
  *  Returns: 1: rangeproof was successfully created
@@ -153,7 +158,7 @@ SECP256K1_WARN_UNUSED_RESULT SECP256K1_API int secp256k1_bulletproof_rangeproof_
  *        value_gen: generator multiplied by value in pedersen commitments (cannot be NULL)
  *            nbits: number of bits proven for each range
  *            nonce: random 32-byte seed used to derive blinding factors (cannot be NULL)
- *    private_nonce: only for multi-party; random 32-byte seed used to derive private blinding factors
+ *    private_nonce: random 32-byte seed used to derive private blinding factors (needed for multi-party)
  *     extra_commit: additonal data committed to by the rangeproof
  * extra_commit_len: length of additional data
  *          message: optional 20 bytes of message that can be recovered by rewinding with the correct nonce

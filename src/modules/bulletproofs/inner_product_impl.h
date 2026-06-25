@@ -106,7 +106,10 @@ typedef struct {
     secp256k1_bulletproof_innerproduct_vfy_data *proof;
 } secp256k1_bulletproof_innerproduct_vfy_ecmult_context;
 
+/* Note: n value is controllable by the caller and must be valid, invalid n will abort the process. */
 size_t secp256k1_bulletproof_innerproduct_proof_length(size_t n) {
+    CHECK(n<INT_MAX);
+
     if (n < IP_AB_SCALARS / 2) {
         return 32 * (1 + 2 * n);
     } else {
@@ -314,14 +317,27 @@ static int secp256k1_bulletproof_innerproduct_vfy_ecmult_callback(secp256k1_scal
  *    needed to compute `P`. We do not hash it in during verification since `P`
  *    may be specified indirectly as a bunch of scalar offsets.
  */
-static int secp256k1_bulletproof_inner_product_verify_impl(const secp256k1_ecmult_context *ecmult_ctx, secp256k1_scratch *scratch, const secp256k1_bulletproof_generators *gens, size_t vec_len, const secp256k1_bulletproof_innerproduct_context *proof, size_t n_proofs, size_t plen, int shared_g) {
+static int secp256k1_bulletproof_inner_product_verify_impl(const secp256k1_ecmult_context *ecmult_ctx, secp256k1_scratch *scratch,
+        const secp256k1_bulletproof_generators *gens, size_t vec_len, const secp256k1_bulletproof_innerproduct_context *proof,
+        size_t n_proofs, size_t plen, int shared_g)
+{
     secp256k1_sha256 sha256;
     secp256k1_bulletproof_innerproduct_vfy_ecmult_context ecmult_data;
     unsigned char commit[32];
-    size_t total_n_points = 2 * vec_len + !!shared_g + 1; /* +1 for shared G (value_gen), +1 for H (blinding_gen) */
+    size_t total_n_points;
     secp256k1_gej r;
     secp256k1_scalar zero;
     size_t i;
+
+    if (vec_len>= INT_MAX/2 - 2) {
+        return 0;
+    }
+    /* vec_len must be power of 2 */
+    if (vec_len>0 && secp256k1_popcountl(vec_len) != 1) {
+        return 0;
+    }
+
+    total_n_points = 2 * vec_len + !!shared_g + 1; /* +1 for shared G (value_gen), +1 for H (blinding_gen) */
 
     if (plen != secp256k1_bulletproof_innerproduct_proof_length(vec_len)) {
         return 0;
@@ -329,6 +345,10 @@ static int secp256k1_bulletproof_inner_product_verify_impl(const secp256k1_ecmul
 
     if (n_proofs == 0) {
         return 1;
+    }
+
+    if (n_proofs >= SIZE_MAX / (sizeof(*ecmult_data.randomizer) + sizeof(*ecmult_data.proof))) {
+        return 0;
     }
 
     if (!secp256k1_scratch_allocate_frame(scratch, n_proofs * (sizeof(*ecmult_data.randomizer) + sizeof(*ecmult_data.proof)), 2)) {
@@ -345,6 +365,12 @@ static int secp256k1_bulletproof_inner_product_verify_impl(const secp256k1_ecmul
     ecmult_data.shared_g = shared_g;
     ecmult_data.randomizer = (secp256k1_scalar *)secp256k1_scratch_alloc(scratch, n_proofs * sizeof(*ecmult_data.randomizer));
     ecmult_data.proof = (secp256k1_bulletproof_innerproduct_vfy_data *)secp256k1_scratch_alloc(scratch, n_proofs * sizeof(*ecmult_data.proof));
+
+    if (ecmult_data.randomizer==NULL || ecmult_data.proof==NULL) {
+        secp256k1_scratch_deallocate_frame(scratch);
+        return 0;
+    }
+
     /* Seed RNG for per-proof randomizers */
     secp256k1_sha256_initialize(&sha256);
     for (i = 0; i < n_proofs; i++) {
@@ -366,8 +392,15 @@ static int secp256k1_bulletproof_inner_product_verify_impl(const secp256k1_ecmul
         int overflow;
         size_t j;
         const size_t n_ab = 2 * vec_len < IP_AB_SCALARS ? 2 * vec_len : IP_AB_SCALARS;
+        const size_t tm = 2 * ecmult_data.lg_vec_len + proof[i].n_extra_rangeproof_points;
 
-        total_n_points += 2 * ecmult_data.lg_vec_len + proof[i].n_extra_rangeproof_points - !!shared_g; /* -1 for shared G */
+        /* Check for total_n_points overflow */
+        if ( tm < !!shared_g || SIZE_MAX - total_n_points <= tm ) {
+            secp256k1_scratch_deallocate_frame(scratch);
+            return 0;
+        }
+
+        total_n_points += tm - !!shared_g; /* -1 for shared G */
 
         /* Extract dot product, will always be the first 32 bytes */
         secp256k1_scalar_set_b32(&dot, serproof, &overflow);
@@ -467,7 +500,10 @@ static int secp256k1_bulletproof_inner_product_verify_impl(const secp256k1_ecmul
         }
         /* Compute inverse of all a's and b's, except the last b whose inverse is not needed.
          * Also compute the inverse of (-r * x1 * ... * xn) which will be needed */
-        secp256k1_scalar_inverse_all_var(ecmult_data.proof[i].abinv, ab, n_ab);
+        if (!secp256k1_scalar_inverse_all_var(ecmult_data.proof[i].abinv, ab, n_ab)) {
+            secp256k1_scratch_deallocate_frame(scratch);
+            return 0;
+        }
         ab[n_ab - 1] = negprod;
 
         /* Compute (-a0 * r * x1 * ... * xn)^-1 which will be used to mask out individual x_i^-2's */
@@ -548,6 +584,10 @@ static int secp256k1_bulletproof_innerproduct_pf_ecmult_callback_l(secp256k1_sca
     }
 
     /* steps 1/2 */
+    if (ab_idx >= ctx->n) {
+        return 0;
+    }
+
     if ((idx / ctx->grouping) % 2 == 0) {
         *pt = ctx->genh[idx];
         *sc = ctx->b[ab_idx];
@@ -651,8 +691,13 @@ static int secp256k1_bulletproof_innerproduct_pf_ecmult_callback_h(secp256k1_sca
 static int secp256k1_bulletproof_inner_product_real_prove_impl(const secp256k1_ecmult_context *ecmult_ctx, secp256k1_scratch *scratch, secp256k1_ge *out_pt, size_t *pt_idx, const secp256k1_ge *g, secp256k1_ge *geng, secp256k1_ge *genh, secp256k1_scalar *a_arr, secp256k1_scalar *b_arr, const secp256k1_scalar *yinv, const secp256k1_scalar *ux, const size_t n, unsigned char *commit) {
     size_t i;
     size_t halfwidth;
-
     secp256k1_bulletproof_innerproduct_pf_ecmult_context pfdata;
+
+    /* n must be power of 2, otherwise halfs will not work well */
+    if (secp256k1_popcountl(n) != 1) {
+        return 0;
+    }
+
     pfdata.yinv = *yinv;
     pfdata.g = g;
     pfdata.geng = geng;
@@ -679,7 +724,12 @@ static int secp256k1_bulletproof_inner_product_real_prove_impl(const secp256k1_e
         secp256k1_scalar_mul(&pfdata.g_sc, &pfdata.g_sc, ux);
 
         secp256k1_scalar_set_int(&pfdata.yinvn, 1);
-        secp256k1_ecmult_multi_var(ecmult_ctx, scratch, &tmplj, NULL, &secp256k1_bulletproof_innerproduct_pf_ecmult_callback_l, (void *) &pfdata, n + 1);
+        if (!secp256k1_ecmult_multi_var(ecmult_ctx, scratch, &tmplj, NULL, &secp256k1_bulletproof_innerproduct_pf_ecmult_callback_l, (void *) &pfdata, n + 1)) {
+            return 0;
+        }
+        if (secp256k1_gej_is_infinity(&tmplj)) {
+            return 0;
+        }
         secp256k1_ge_set_gej(&out_pt[(*pt_idx)++], &tmplj);
 
         /* R */
@@ -692,16 +742,23 @@ static int secp256k1_bulletproof_inner_product_real_prove_impl(const secp256k1_e
         secp256k1_scalar_mul(&pfdata.g_sc, &pfdata.g_sc, ux);
 
         secp256k1_scalar_set_int(&pfdata.yinvn, 1);
-        secp256k1_ecmult_multi_var(ecmult_ctx, scratch, &tmprj, NULL, &secp256k1_bulletproof_innerproduct_pf_ecmult_callback_r, (void *) &pfdata, n + 1);
+        if (!secp256k1_ecmult_multi_var(ecmult_ctx, scratch, &tmprj, NULL, &secp256k1_bulletproof_innerproduct_pf_ecmult_callback_r, (void *) &pfdata, n + 1)) {
+            return 0;
+        }
+        if (secp256k1_gej_is_infinity(&tmprj)) {
+            return 0;
+        }
         secp256k1_ge_set_gej(&out_pt[(*pt_idx)++], &tmprj);
 
         /* x, x^2, x^-1, x^-2 */
-        secp256k1_bulletproof_update_commit(commit, &out_pt[*pt_idx - 2], &out_pt[*pt_idx] - 1);
+        if (!secp256k1_bulletproof_update_commit(commit, &out_pt[*pt_idx - 2], &out_pt[*pt_idx] - 1))
+            return 0;
         secp256k1_scalar_set_b32(&pfdata.x[i], commit, &overflow);
         if (overflow || secp256k1_scalar_is_zero(&pfdata.x[i])) {
             return 0;
         }
-        secp256k1_scalar_inverse_var(&pfdata.xinv[i], &pfdata.x[i]);
+        if (!secp256k1_scalar_inverse_var(&pfdata.xinv[i], &pfdata.x[i]))
+            return 0;
 
         /* update scalar array */
         for (j = 0; j < halfwidth; j++) {
@@ -722,11 +779,21 @@ static int secp256k1_bulletproof_inner_product_real_prove_impl(const secp256k1_e
 
             for (j = 0; j < halfwidth; j++) {
                 secp256k1_gej rj;
-                secp256k1_ecmult_multi_var(ecmult_ctx, scratch, &rj, NULL, &secp256k1_bulletproof_innerproduct_pf_ecmult_callback_g, (void *) &pfdata, 2u << i);
+                if (!secp256k1_ecmult_multi_var(ecmult_ctx, scratch, &rj, NULL, &secp256k1_bulletproof_innerproduct_pf_ecmult_callback_g, (void *) &pfdata, 2u << i)) {
+                    return 0;
+                }
+                if (secp256k1_gej_is_infinity(&rj)) {
+                    return 0;
+                }
                 pfdata.geng += 2u << i;
                 secp256k1_ge_set_gej(&geng[j], &rj);
                 secp256k1_scalar_set_int(&pfdata.yinvn, 1);
-                secp256k1_ecmult_multi_var(ecmult_ctx, scratch, &rj, NULL, &secp256k1_bulletproof_innerproduct_pf_ecmult_callback_h, (void *) &pfdata, 2u << i);
+                if (!secp256k1_ecmult_multi_var(ecmult_ctx, scratch, &rj, NULL, &secp256k1_bulletproof_innerproduct_pf_ecmult_callback_h, (void *) &pfdata, 2u << i)) {
+                    return 0;
+                }
+                if (secp256k1_gej_is_infinity(&rj)) {
+                    return 0;
+                }
                 pfdata.genh += 2u << i;
                 secp256k1_ge_set_gej(&genh[j], &rj);
             }
@@ -744,7 +811,11 @@ static int secp256k1_bulletproof_inner_product_real_prove_impl(const secp256k1_e
     return 1;
 }
 
-static int secp256k1_bulletproof_inner_product_prove_impl(const secp256k1_ecmult_context *ecmult_ctx, secp256k1_scratch *scratch, unsigned char *proof, size_t *proof_len, const secp256k1_bulletproof_generators *gens, const secp256k1_scalar *yinv, const size_t n, secp256k1_ecmult_multi_callback *cb, void *cb_data, const unsigned char *commit_inp) {
+static int secp256k1_bulletproof_inner_product_prove_impl(const secp256k1_ecmult_context *ecmult_ctx,
+    secp256k1_scratch *scratch, unsigned char *proof, size_t *proof_len, const secp256k1_bulletproof_generators *gens,
+    const secp256k1_scalar *yinv, const size_t n, secp256k1_ecmult_multi_callback *cb, void *cb_data,
+    const unsigned char *commit_inp)
+{
     secp256k1_sha256 sha256;
     size_t i;
     unsigned char commit[32];
@@ -757,12 +828,18 @@ static int secp256k1_bulletproof_inner_product_prove_impl(const secp256k1_ecmult
     int overflow;
     size_t pt_idx = 0;
     secp256k1_scalar dot;
+    size_t pr_len;
     size_t half_n_ab = n < IP_AB_SCALARS / 2 ? n : IP_AB_SCALARS / 2;
 
-    if (*proof_len < secp256k1_bulletproof_innerproduct_proof_length(n)) {
+    if (n >= INT_MAX || n>=SIZE_MAX/2/(sizeof(secp256k1_scalar) + sizeof(secp256k1_ge))/2 || (n > IP_AB_SCALARS / 2 && secp256k1_floor_lg(2 * n / IP_AB_SCALARS) >= SECP256K1_BULLETPROOF_MAX_DEPTH)) {
         return 0;
     }
-    *proof_len = secp256k1_bulletproof_innerproduct_proof_length(n);
+
+    pr_len = secp256k1_bulletproof_innerproduct_proof_length(n);
+    if (*proof_len < pr_len) {
+        return 0;
+    }
+    *proof_len = pr_len;
 
     /* Special-case lengths 0 and 1 whose proofs are just explicit lists of scalars */
     if (n <= IP_AB_SCALARS / 2) {
@@ -770,8 +847,12 @@ static int secp256k1_bulletproof_inner_product_prove_impl(const secp256k1_ecmult
         secp256k1_scalar b[IP_AB_SCALARS / 2];
 
         for (i = 0; i < n; i++) {
-            cb(&a[i], NULL, 2*i, cb_data);
-            cb(&b[i], NULL, 2*i+1, cb_data);
+            if (!cb(&a[i], NULL, 2*i, cb_data)) {
+                return 0;
+            }
+            if (!cb(&b[i], NULL, 2*i+1, cb_data)) {
+                return 0;
+            }
         }
 
         secp256k1_scalar_dot_product(&dot, a, b, n);
@@ -795,13 +876,21 @@ static int secp256k1_bulletproof_inner_product_prove_impl(const secp256k1_ecmult
     geng = (secp256k1_ge*)secp256k1_scratch_alloc(scratch, n * sizeof(secp256k1_ge));
     genh = (secp256k1_ge*)secp256k1_scratch_alloc(scratch, n * sizeof(secp256k1_ge));
     out_pt = (secp256k1_ge*)secp256k1_scratch_alloc(scratch, 2 * secp256k1_floor_lg(n) * sizeof(secp256k1_ge));
-    VERIFY_CHECK(a_arr != NULL);
-    VERIFY_CHECK(b_arr != NULL);
-    VERIFY_CHECK(gens != NULL);
+
+    if (a_arr==NULL || b_arr==NULL || geng==NULL || genh==NULL || out_pt==NULL) {
+        secp256k1_scratch_deallocate_frame(scratch);
+        return 0;
+    }
 
     for (i = 0; i < n; i++) {
-        cb(&a_arr[i], NULL, 2*i, cb_data);
-        cb(&b_arr[i], NULL, 2*i+1, cb_data);
+        if (!cb(&a_arr[i], NULL, 2*i, cb_data)) {
+            secp256k1_scratch_deallocate_frame(scratch);
+            return 0;
+        }
+        if (!cb(&b_arr[i], NULL, 2*i+1, cb_data)) {
+            secp256k1_scratch_deallocate_frame(scratch);
+            return 0;
+        }
         geng[i] = gens->gens[i];
         genh[i] = gens->gens[i + gens->n/2];
     }
@@ -836,7 +925,10 @@ static int secp256k1_bulletproof_inner_product_prove_impl(const secp256k1_ecmult
         secp256k1_scalar_get_b32(&proof[32 * (i + half_n_ab)], &b_arr[i]);
     }
     proof += 64 * half_n_ab;
-    secp256k1_bulletproof_serialize_points(proof, out_pt, pt_idx);
+    if (!secp256k1_bulletproof_serialize_points(proof, out_pt, pt_idx)) {
+        secp256k1_scratch_deallocate_frame(scratch);
+        return 0;
+    }
 
     secp256k1_scratch_deallocate_frame(scratch);
     return 1;

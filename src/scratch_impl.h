@@ -22,6 +22,8 @@ static secp256k1_scratch* secp256k1_scratch_create(const secp256k1_callback* err
 
 static void secp256k1_scratch_destroy(secp256k1_scratch* scratch) {
     if (scratch != NULL) {
+        /* Don't mark this VERIFY_CHECK as a problem, if scratch->frame non null it is mean that error already happens,
+         * we can't do better at this point. */
         VERIFY_CHECK(scratch->frame == 0);
         free(scratch);
     }
@@ -58,14 +60,30 @@ static int secp256k1_scratch_allocate_frame(secp256k1_scratch* scratch, size_t n
 }
 
 static void secp256k1_scratch_deallocate_frame(secp256k1_scratch* scratch) {
+    /* Don't mark this VERIFY_CHECK as a problem, if scratch->frame non null it is mean that error already happens,
+     * we can't do better at this point. */
     VERIFY_CHECK(scratch->frame > 0);
     scratch->frame -= 1;
+    secp256k1_memclear(scratch->data[scratch->frame], scratch->frame_size[scratch->frame]);
     free(scratch->data[scratch->frame]);
+    scratch->data[scratch->frame] = NULL;
+    scratch->offset[scratch->frame] = 0;
+    scratch->frame_size[scratch->frame] = 0;
 }
 
 static void *secp256k1_scratch_alloc(secp256k1_scratch* scratch, size_t size) {
     void *ret;
-    size_t frame = scratch->frame - 1;
+    size_t frame;
+
+    if (scratch->frame == 0)
+        return NULL;
+
+    frame = scratch->frame - 1;
+
+    /* data overflow case. In any case scratch buffer can't be so large */
+    if (size>=SIZE_MAX/2 || scratch->offset[frame]>=SIZE_MAX/2)
+        return NULL;
+
     size = ROUND_TO_ALIGN(size);
 
     if (scratch->frame == 0 || size + scratch->offset[frame] > scratch->frame_size[frame]) {

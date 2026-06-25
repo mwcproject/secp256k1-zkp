@@ -161,6 +161,7 @@ static void test_surjectionproof_api(void) {
     secp256k1_context_destroy(both);
 }
 
+/* Note, it is a test, possible data overflow can be tolarated */
 static void test_input_selection(size_t n_inputs) {
     unsigned char seed[32];
     size_t i;
@@ -179,11 +180,12 @@ static void test_input_selection(size_t n_inputs) {
     }
 
     /* cannot match output when told to use zero keys */
+    /* It is a test case, this workflow don't need to meet normal workflow requimenets about error handling */
     result = secp256k1_surjectionproof_initialize(ctx, &proof, &input_index, fixed_input_tags, n_inputs, 0, &fixed_input_tags[0], try_count, seed);
     CHECK(result == 0);
-    CHECK(secp256k1_surjectionproof_n_used_inputs(ctx, &proof) == 0);
+    CHECK(secp256k1_surjectionproof_n_used_inputs(ctx, &proof) == 0); /* error expected */
     CHECK(secp256k1_surjectionproof_n_total_inputs(ctx, &proof) == n_inputs);
-    CHECK(secp256k1_surjectionproof_serialized_size(ctx, &proof) == 34 + (n_inputs + 7) / 8);
+    CHECK(secp256k1_surjectionproof_serialized_size(ctx, &proof) == 0 ); /* error expected */
     if (n_inputs > 0) {
         /* succeed in 100*n_inputs tries (probability of failure e^-100) */
         result = secp256k1_surjectionproof_initialize(ctx, &proof, &input_index, fixed_input_tags, n_inputs, 1, &fixed_input_tags[0], try_count, seed);
@@ -327,6 +329,7 @@ static void test_input_selection_distribution(void) {
     CHECK(used_inputs[3] > 6918 && used_inputs[3] < 8053);
 }
 
+/* Note: It is a test, high security standards are not applicable */
 static void test_gen_verify(size_t n_inputs, size_t n_used) {
     unsigned char seed[32];
     secp256k1_surjectionproof proof;
@@ -381,7 +384,7 @@ static void test_gen_verify(size_t n_inputs, size_t n_used) {
     /* trailing garbage */
     memcpy(&serialized_proof_trailing, &serialized_proof, serialized_len);
     serialized_proof_trailing[serialized_len] = seed[0];
-    CHECK(secp256k1_surjectionproof_parse(ctx, &proof, serialized_proof, serialized_len + 1) == 0);
+    CHECK(secp256k1_surjectionproof_parse(ctx, &proof, serialized_proof_trailing, serialized_len + 1) == 0);
 
     CHECK(secp256k1_surjectionproof_parse(ctx, &proof, serialized_proof, serialized_len));
     result = secp256k1_surjectionproof_verify(ctx, &proof, ephemeral_input_tags, n_inputs, &ephemeral_input_tags[n_inputs]);
@@ -435,9 +438,9 @@ static void test_no_used_inputs_verify(void) {
     CHECK(secp256k1_generator_generate_blinded(ctx, &ephemeral_output_tag, fixed_output_tag.data, blinding_key));
 
     /* create "borromean signature" which is just a hash of metadata (pubkeys, etc) in this case */
-    secp256k1_generator_load(&output, &ephemeral_output_tag);
-    secp256k1_generator_load(&inputs[0], &ephemeral_input_tags[0]);
-    secp256k1_surjection_genmessage(proof.data, inputs, 1, &output);
+    CHECK(secp256k1_generator_load(&output, &ephemeral_output_tag));
+    CHECK(secp256k1_generator_load(&inputs[0], &ephemeral_input_tags[0]));
+    CHECK(secp256k1_surjection_genmessage(proof.data, inputs, 1, &output));
     secp256k1_sha256_initialize(&sha256_e0);
     secp256k1_sha256_write(&sha256_e0, proof.data, 32);
     secp256k1_sha256_finalize(&sha256_e0, proof.data);
@@ -451,9 +454,15 @@ void test_bad_serialize(void) {
     unsigned char serialized_proof[SECP256K1_SURJECTIONPROOF_SERIALIZATION_BYTES_MAX];
     size_t serialized_len;
 
-    proof.n_inputs = 0;
+    memset(&proof, 0, sizeof(proof));
     serialized_len = 2 + 31;
-    /* e0 is one byte too short */
+    /* Invalid proof with zero used inputs is rejected. */
+    CHECK(secp256k1_surjectionproof_serialize(ctx, serialized_proof, &serialized_len, &proof) == 0);
+
+    proof.n_inputs = 1;
+    proof.used_inputs[0] = 1;
+    serialized_len = 2 + (proof.n_inputs + 7) / 8 + 32 * 2 - 1;
+    /* Serialized proof is one byte too short. */
     CHECK(secp256k1_surjectionproof_serialize(ctx, serialized_proof, &serialized_len, &proof) == 0);
 }
 

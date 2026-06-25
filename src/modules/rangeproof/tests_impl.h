@@ -234,10 +234,10 @@ static void test_borromean(void) {
         for (j = 0; j < rsizes[i]; j++) {
             random_scalar_order(&s[c + j]);
             if(secp256k1_rand32()&7) {
-                s[i] = one;
+                s[c + j] = one;
             }
             if (j == secidx[i]) {
-                secp256k1_ecmult_gen(&ctx->ecmult_gen_ctx, &pubs[c + j], &sec[i]);
+                CHECK(secp256k1_ecmult_gen(&ctx->ecmult_gen_ctx, &pubs[c + j], &sec[i]));
             } else {
                 random_group_element_test(&ge);
                 random_group_element_jacobian_test(&pubs[c + j],&ge);
@@ -261,6 +261,47 @@ static void test_borromean(void) {
         }
         CHECK(!secp256k1_borromean_verify(&ctx->ecmult_ctx, NULL, e0, s, pubs, rsizes, nrings, m, 32));
     }
+}
+
+static void test_borromean_metadata_checks(void) {
+    unsigned char e0[32];
+    unsigned char m[32];
+    secp256k1_scalar s[2];
+    secp256k1_gej pubs[2];
+    secp256k1_ge ge;
+    secp256k1_scalar k[1];
+    secp256k1_scalar sec[1];
+    size_t rsizes[1];
+    size_t secidx[1];
+
+    secp256k1_rand256_test(m);
+    secp256k1_scalar_set_int(&s[0], 1);
+    secp256k1_scalar_set_int(&s[1], 1);
+    secp256k1_scalar_set_int(&k[0], 1);
+    secp256k1_scalar_set_int(&sec[0], 1);
+    CHECK(secp256k1_ecmult_gen(&ctx->ecmult_gen_ctx, &pubs[0], &sec[0]));
+    random_group_element_test(&ge);
+    random_group_element_jacobian_test(&pubs[1], &ge);
+
+    rsizes[0] = 0;
+    secidx[0] = 0;
+    CHECK(!secp256k1_borromean_sign(&ctx->ecmult_ctx, &ctx->ecmult_gen_ctx, e0, s, pubs, k, sec, rsizes, secidx, 1, m, 32));
+
+    rsizes[0] = 1;
+    secidx[0] = 1;
+    CHECK(!secp256k1_borromean_sign(&ctx->ecmult_ctx, &ctx->ecmult_gen_ctx, e0, s, pubs, k, sec, rsizes, secidx, 1, m, 32));
+
+    secidx[0] = SIZE_MAX;
+    CHECK(!secp256k1_borromean_sign(&ctx->ecmult_ctx, &ctx->ecmult_gen_ctx, e0, s, pubs, k, sec, rsizes, secidx, 1, m, 32));
+
+    rsizes[0] = 2;
+    secidx[0] = 0;
+    secp256k1_scalar_clear(&s[1]);
+    CHECK(!secp256k1_borromean_sign(&ctx->ecmult_ctx, &ctx->ecmult_gen_ctx, e0, s, pubs, k, sec, rsizes, secidx, 1, m, 32));
+
+    secidx[0] = 1;
+    secp256k1_scalar_set_int(&s[0], 0);
+    CHECK(!secp256k1_borromean_sign(&ctx->ecmult_ctx, &ctx->ecmult_gen_ctx, e0, s, pubs, k, sec, rsizes, secidx, 1, m, 32));
 }
 
 static void test_rangeproof(void) {
@@ -476,8 +517,8 @@ void test_rangeproof_fixed_vectors(void) {
         0xf5, 0x1e, 0x0d, 0xc5, 0x86, 0x78, 0x51, 0xa9, 0x00, 0x00, 0xef, 0x4d, 0xe2, 0x94, 0x60, 0x89,
         0x83, 0x04, 0xb4, 0x0e, 0x90, 0x10, 0x05, 0x1c, 0x7f, 0xd7, 0x33, 0x92, 0x1f, 0xe7, 0x74, 0x59
     };
-    size_t min_value_1;
-    size_t max_value_1;
+    uint64_t min_value_1;
+    uint64_t max_value_1;
     secp256k1_pedersen_commitment pc;
 
     CHECK(secp256k1_pedersen_commitment_parse(ctx, &pc, commit_1));
@@ -516,6 +557,7 @@ void run_rangeproof_tests(void) {
     test_api();
     test_rangeproof_fixed_vectors();
     test_pedersen_commitment_fixed_vector();
+    test_borromean_metadata_checks();
     for (i = 0; i < 2*count; i++) {
         test_borromean();
     }

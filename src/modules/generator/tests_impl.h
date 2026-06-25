@@ -125,12 +125,20 @@ void test_shallue_van_de_woestijne(void) {
                 secp256k1_fe_negate(&fe, &fe, 1);
                 secp256k1_fe_normalize(&fe);
             }
-            shallue_van_de_woestijne(&ge, &fe);
+            CHECK(shallue_van_de_woestijne(&ge, &fe));
             secp256k1_ge_to_storage(&ges, &ge);
 
             CHECK(memcmp(&ges, &results[i * 2 + s - 2], sizeof(secp256k1_ge_storage)) == 0);
         }
     }
+}
+
+void test_shallue_van_de_woestijne_zero_fails(void) {
+    secp256k1_ge ge;
+    secp256k1_fe fe;
+
+    secp256k1_fe_clear(&fe);
+    CHECK(shallue_van_de_woestijne(&ge, &fe) == 0);
 }
 
 void test_generator_generate(void) {
@@ -180,11 +188,11 @@ void test_generator_generate(void) {
         memset(v, 0, 31);
         v[31] = i;
         CHECK(secp256k1_generator_generate_blinded(ctx, &gen, v, s));
-        secp256k1_generator_load(&ge, &gen);
+        CHECK(secp256k1_generator_load(&ge, &gen));
         secp256k1_ge_to_storage(&ges, &ge);
         CHECK(memcmp(&ges, &results[i - 1], sizeof(secp256k1_ge_storage)) == 0);
         CHECK(secp256k1_generator_generate(ctx, &gen, v));
-        secp256k1_generator_load(&ge, &gen);
+        CHECK(secp256k1_generator_load(&ge, &gen));
         secp256k1_ge_to_storage(&ges, &ge);
         CHECK(memcmp(&ges, &results[i - 1], sizeof(secp256k1_ge_storage)) == 0);
     }
@@ -209,9 +217,20 @@ void test_generator_fixed_vector(void) {
     CHECK(!secp256k1_generator_parse(ctx, &parse, result));
 }
 
+void test_generator_load_rejects_off_curve(void) {
+    unsigned char serialized[33];
+    secp256k1_generator invalid = {{0}};
+    secp256k1_ge ge;
+
+    CHECK(!secp256k1_generator_load(&ge, &invalid));
+    CHECK(!secp256k1_generator_serialize(ctx, serialized, &invalid));
+}
+
 void run_generator_tests(void) {
     test_shallue_van_de_woestijne();
+    test_shallue_van_de_woestijne_zero_fails();
     test_generator_fixed_vector();
+    test_generator_load_rejects_off_curve();
     test_generator_api();
     test_generator_generate();
 }

@@ -25,6 +25,7 @@ static const secp256k1_callback default_error_callback = {
     NULL
 };
 
+/* Note, it is a util, so we can skip error handling here. Generated files content will be validated manually in any case. */
 int main(int argc, char **argv) {
     secp256k1_ecmult_gen_context ctx;
     void *prealloc, *base;
@@ -50,7 +51,7 @@ int main(int argc, char **argv) {
     base = checked_malloc(&default_error_callback, SECP256K1_ECMULT_GEN_CONTEXT_PREALLOCATED_SIZE);
     prealloc = base;
     secp256k1_ecmult_gen_context_init(&ctx);
-    secp256k1_ecmult_gen_context_build(&ctx, &prealloc);
+    CHECK(secp256k1_ecmult_gen_context_build(&ctx, &prealloc));
     for(outer = 0; outer != 64; outer++) {
         fprintf(fp,"{\n");
         for(inner = 0; inner != 16; inner++) {

@@ -15,7 +15,7 @@
 #include "scalar.h"
 #include "hash.h"
 
-SECP256K1_INLINE static void secp256k1_surjection_genmessage(unsigned char *msg32, secp256k1_ge *ephemeral_input_tags, size_t n_input_tags, secp256k1_ge *ephemeral_output_tag) {
+SECP256K1_INLINE static int secp256k1_surjection_genmessage(unsigned char *msg32, secp256k1_ge *ephemeral_input_tags, size_t n_input_tags, secp256k1_ge *ephemeral_output_tag) {
     /* compute message */
     size_t i;
     unsigned char pk_ser[33];
@@ -24,19 +24,26 @@ SECP256K1_INLINE static void secp256k1_surjection_genmessage(unsigned char *msg3
 
     secp256k1_sha256_initialize(&sha256_en);
     for (i = 0; i < n_input_tags; i++) {
-        secp256k1_eckey_pubkey_serialize(&ephemeral_input_tags[i], pk_ser, &pk_len, 1);
+        if (!secp256k1_eckey_pubkey_serialize(&ephemeral_input_tags[i], pk_ser, &pk_len, 1)) {
+            return 0;
+        }
         assert(pk_len == sizeof(pk_ser));
         secp256k1_sha256_write(&sha256_en, pk_ser, pk_len);
     }
-    secp256k1_eckey_pubkey_serialize(ephemeral_output_tag, pk_ser, &pk_len, 1);
+    if (!secp256k1_eckey_pubkey_serialize(ephemeral_output_tag, pk_ser, &pk_len, 1)) {
+        return 0;
+    }
     assert(pk_len == sizeof(pk_ser));
     secp256k1_sha256_write(&sha256_en, pk_ser, pk_len);
     secp256k1_sha256_finalize(&sha256_en, msg32);
+
+    return 1;
 }
 
 SECP256K1_INLINE static int secp256k1_surjection_genrand(secp256k1_scalar *s, size_t ns, const secp256k1_scalar *blinding_key) {
     size_t i;
     unsigned char sec_input[36];
+    unsigned char sec_rand[32];
     secp256k1_sha256 sha256_en;
 
     /* compute s values */
@@ -50,14 +57,16 @@ SECP256K1_INLINE static int secp256k1_surjection_genrand(secp256k1_scalar *s, si
 
         secp256k1_sha256_initialize(&sha256_en);
         secp256k1_sha256_write(&sha256_en, sec_input, 36);
-        secp256k1_sha256_finalize(&sha256_en, sec_input);
-        secp256k1_scalar_set_b32(&s[i], sec_input, &overflow);
+        secp256k1_sha256_finalize(&sha256_en, sec_rand);
+        secp256k1_scalar_set_b32(&s[i], sec_rand, &overflow);
         if (overflow == 1) {
-            memset(sec_input, 0, 32);
+            secp256k1_memclear(sec_rand, sizeof(sec_rand));
+            secp256k1_memclear(sec_input, sizeof(sec_input));
             return 0;
         }
     }
-    memset(sec_input, 0, 32);
+    secp256k1_memclear(sec_rand, sizeof(sec_rand));
+    secp256k1_memclear(sec_input, sizeof(sec_input));
     return 1;
 }
 
@@ -68,6 +77,9 @@ SECP256K1_INLINE static int secp256k1_surjection_compute_public_keys(secp256k1_g
         if (used_tags[i / 8] & (1 << (i % 8))) {
             secp256k1_ge tmpge;
             secp256k1_ge_neg(&tmpge, &input_tags[i]);
+            if (j >= n_pubkeys) {
+                return 0;
+            }
             secp256k1_gej_set_ge(&pubkeys[j], &tmpge);
             secp256k1_gej_add_ge_var(&pubkeys[j], &pubkeys[j], output_tag, NULL);
             if (ring_input_index != NULL && input_index == i) {

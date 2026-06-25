@@ -115,11 +115,11 @@ static int secp256k1_bulletproof_rangeproof_vfy_callback(secp256k1_scalar *sc, s
                 }
                 if (ctx->min_value != NULL) {
                     secp256k1_scalar mv;
-                    secp256k1_scalar_set_int(&mv, ctx->min_value[i]);
+                    secp256k1_scalar_set_u64(&mv, ctx->min_value[i]);
                     secp256k1_scalar_mul(&mv, &mv, &ctx->negz);
                     secp256k1_scalar_mul(&mv, &mv, &ctx->z);
                     for (j = 0; j < i; j++) {
-                        secp256k1_scalar_mul(&negzn, &negzn, &ctx->z);
+                        secp256k1_scalar_mul(&mv, &mv, &ctx->z);
                     }
                     secp256k1_scalar_add(&twosum, &twosum, &mv);
                 }
@@ -162,15 +162,30 @@ static int secp256k1_bulletproof_rangeproof_vfy_callback(secp256k1_scalar *sc, s
     return 1;
 }
 
-static int secp256k1_bulletproof_rangeproof_verify_impl(const secp256k1_ecmult_context *ecmult_ctx, secp256k1_scratch *scratch, const unsigned char* const* proof, const size_t n_proofs, const size_t plen, size_t nbits, const uint64_t* const* min_value, const secp256k1_ge* const* commitp, size_t n_commits, const secp256k1_ge *value_gen, const secp256k1_bulletproof_generators *gens, const unsigned char* const* extra_commit, size_t *extra_commit_len) {
+static int secp256k1_bulletproof_rangeproof_verify_impl(const secp256k1_ecmult_context *ecmult_ctx, secp256k1_scratch *scratch,
+            const unsigned char* const* proof, const size_t n_proofs, const size_t plen, size_t nbits, const uint64_t* const* min_value,
+            const secp256k1_ge* const* commitp, size_t n_commits, const secp256k1_ge *value_gen, const secp256k1_bulletproof_generators *gens,
+            const unsigned char* const* extra_commit, size_t *extra_commit_len)
+{
     secp256k1_bulletproof_vfy_ecmult_context *ecmult_data;
     secp256k1_bulletproof_innerproduct_context *innp_ctx;
     int ret;
     size_t i;
     int same_generators = 1;
 
+    /* n_commits serialized into 4 bytes, checking if it is ok */
+    if ( (uint64_t) n_commits > (uint64_t) 0xFFFFFFFF) {
+        return 0;
+    }
+    if ( n_proofs==0 || n_proofs >= SIZE_MAX / (sizeof(*ecmult_data) + sizeof(*innp_ctx)) ) {
+        return 0;
+    }
+
     /* sanity-check input */
     if (secp256k1_popcountl(nbits) != 1 || nbits > MAX_NBITS) {
+        return 0;
+    }
+    if (secp256k1_popcountl(n_commits) != 1) {
         return 0;
     }
     if (plen < 64 + 128 + 1 + 32) {  /* inner product argument will do a more precise check */
@@ -185,6 +200,11 @@ static int secp256k1_bulletproof_rangeproof_verify_impl(const secp256k1_ecmult_c
     }
     ecmult_data = (secp256k1_bulletproof_vfy_ecmult_context *)secp256k1_scratch_alloc(scratch, n_proofs * sizeof(*ecmult_data));
     innp_ctx = (secp256k1_bulletproof_innerproduct_context *)secp256k1_scratch_alloc(scratch, n_proofs * sizeof(*innp_ctx));
+
+    if (ecmult_data==NULL || innp_ctx==NULL) {
+        secp256k1_scratch_deallocate_frame(scratch);
+        return 0;
+    }
 
     /* Check if all generators are equal. If so, we can amortize all their scalar multiplications
      * by them and save one scalar-ge multiplication per proof. */
@@ -231,7 +251,10 @@ static int secp256k1_bulletproof_rangeproof_verify_impl(const secp256k1_ecmult_c
             secp256k1_sha256_finalize(&sha256, commit);
         }
         for (j = 0; j < n_commits; j++) {
-            secp256k1_bulletproof_update_commit(commit, &commitp[i][j], &value_gen[i]);
+            if (!secp256k1_bulletproof_update_commit(commit, &commitp[i][j], &value_gen[i])) {
+                secp256k1_scratch_deallocate_frame(scratch);
+                return 0;
+            }
         }
         if (extra_commit != NULL && extra_commit[i] != NULL) {
             secp256k1_sha256_initialize(&sha256);
@@ -243,16 +266,23 @@ static int secp256k1_bulletproof_rangeproof_verify_impl(const secp256k1_ecmult_c
         /* Compute y, z, x */
         if (!secp256k1_bulletproof_deserialize_point(&age, &proof[i][64], 0, 4) ||
             !secp256k1_bulletproof_deserialize_point(&sge, &proof[i][64], 1, 4)) {
+            secp256k1_scratch_deallocate_frame(scratch);
             return 0;
         }
 
-        secp256k1_bulletproof_update_commit(commit, &age, &sge);
+        if (!secp256k1_bulletproof_update_commit(commit, &age, &sge)) {
+            secp256k1_scratch_deallocate_frame(scratch);
+            return 0;
+        }
         secp256k1_scalar_set_b32(&ecmult_data[i].y, commit, &overflow);
         if (overflow || secp256k1_scalar_is_zero(&ecmult_data[i].y)) {
             secp256k1_scratch_deallocate_frame(scratch);
             return 0;
         }
-        secp256k1_bulletproof_update_commit(commit, &age, &sge);
+        if (!secp256k1_bulletproof_update_commit(commit, &age, &sge)) {
+            secp256k1_scratch_deallocate_frame(scratch);
+            return 0;
+        }
         secp256k1_scalar_set_b32(&ecmult_data[i].z, commit, &overflow);
         if (overflow || secp256k1_scalar_is_zero(&ecmult_data[i].z)) {
             secp256k1_scratch_deallocate_frame(scratch);
@@ -261,10 +291,14 @@ static int secp256k1_bulletproof_rangeproof_verify_impl(const secp256k1_ecmult_c
 
         if (!secp256k1_bulletproof_deserialize_point(&ecmult_data[i].t1, &proof[i][64], 2, 4) ||
             !secp256k1_bulletproof_deserialize_point(&ecmult_data[i].t2, &proof[i][64], 3, 4)) {
+            secp256k1_scratch_deallocate_frame(scratch);
             return 0;
         }
 
-        secp256k1_bulletproof_update_commit(commit, &ecmult_data[i].t1, &ecmult_data[i].t2);
+        if (!secp256k1_bulletproof_update_commit(commit, &ecmult_data[i].t1, &ecmult_data[i].t2)) {
+            secp256k1_scratch_deallocate_frame(scratch);
+            return 0;
+        }
         secp256k1_scalar_set_b32(&ecmult_data[i].x, commit, &overflow);
         if (overflow || secp256k1_scalar_is_zero(&ecmult_data[i].x)) {
             secp256k1_scratch_deallocate_frame(scratch);
@@ -272,7 +306,10 @@ static int secp256k1_bulletproof_rangeproof_verify_impl(const secp256k1_ecmult_c
         }
 
         /* compute exponent offsets */
-        secp256k1_scalar_inverse_var(&ecmult_data[i].yinv, &ecmult_data[i].y);  /* TODO somehow batch this w the inner-product argument inverse */
+        if (!secp256k1_scalar_inverse_var(&ecmult_data[i].yinv, &ecmult_data[i].y)) {
+            secp256k1_scratch_deallocate_frame(scratch);
+            return 0;
+        }
         ecmult_data[i].yinvn = ecmult_data[i].yinv;
         for (j = 0; j < secp256k1_floor_lg(nbits); j++) {
             secp256k1_scalar_sqr(&ecmult_data[i].yinvn, &ecmult_data[i].yinvn);
@@ -457,7 +494,19 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(
     /* inner product proof variables */
     secp256k1_ge out_pt[4];
 
+    if ( nbits==0 || n_commits >= SIZE_MAX / nbits || n_commits > 0xFFFFFFFF )
+        return 0;
+
     if (secp256k1_popcountl(nbits) != 1 || nbits > MAX_NBITS) {
+        return 0;
+    }
+    /* We need nbits * n_commits to be a power of two. Because nbits is already
+     * constrained to a power of two above, this also requires n_commits to be
+     * a power of two. */
+    if (secp256k1_popcountl(n_commits) != 1) {
+        return 0;
+    }
+    if (n_commits > (((size_t)1 << SECP256K1_BULLETPROOF_MAX_DEPTH) / nbits)) {
         return 0;
     }
     for (i = 0; i < n_commits; i++) {
@@ -500,7 +549,9 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(
         secp256k1_sha256_finalize(&sha256, commit);
     }
     for (i = 0; i < n_commits; i++) {
-        secp256k1_bulletproof_update_commit(commit, &commitp[i], value_gen); /* TODO be less stupid about this */
+        if (!secp256k1_bulletproof_update_commit(commit, &commitp[i], value_gen)) {
+            return 0;
+        }
     }
     if (extra_commit != NULL) {
         secp256k1_sha256_initialize(&sha256);
@@ -514,10 +565,12 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(
 
     if (proof == NULL && tauxc == NULL && tge != NULL) {
         /* Multi-party bulletproof: export tau1j*G and tau2j*G */
-        secp256k1_ecmult_const(&tmpj, &gens->blinding_gen[0], &tau1, 256);
+        if (!secp256k1_ecmult_const(&tmpj, &gens->blinding_gen[0], &tau1, 256))
+            return 0;
         secp256k1_ge_set_gej(&tge[0], &tmpj);
 
-        secp256k1_ecmult_const(&tmpj, &gens->blinding_gen[0], &tau2, 256);
+        if (!secp256k1_ecmult_const(&tmpj, &gens->blinding_gen[0], &tau2, 256))
+            return 0;
         secp256k1_ge_set_gej(&tge[1], &tmpj);
 
         return 1;
@@ -540,8 +593,10 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(
     }
 
     /* Compute A and S */
-    secp256k1_ecmult_const(&aj, &gens->blinding_gen[0], &alpha, 256);
-    secp256k1_ecmult_const(&sj, &gens->blinding_gen[0], &rho, 256);
+    if (!secp256k1_ecmult_const(&aj, &gens->blinding_gen[0], &alpha, 256))
+        return 0;
+    if (!secp256k1_ecmult_const(&sj, &gens->blinding_gen[0], &rho, 256))
+        return 0;
     for (i = 0; i < n_commits; i++) {
         for (j = 0; j < nbits; j++) {
             secp256k1_scalar sl, sr;
@@ -559,10 +614,12 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(
 
             secp256k1_gej_add_ge(&aj, &aj, &aterm);
 
-            secp256k1_ecmult_const(&stermj, &gens->gens[i * nbits + j], &sl, 256);
+            if (!secp256k1_ecmult_const(&stermj, &gens->gens[i * nbits + j], &sl, 256))
+                return 0;
             secp256k1_ge_set_gej(&sterm, &stermj);
             secp256k1_gej_add_ge(&sj, &sj, &sterm);
-            secp256k1_ecmult_const(&stermj, &gens->gens[i * nbits + j + gens->n/2], &sr, 256);
+            if (!secp256k1_ecmult_const(&stermj, &gens->gens[i * nbits + j + gens->n/2], &sr, 256))
+                return 0;
             secp256k1_ge_set_gej(&sterm, &stermj);
             secp256k1_gej_add_ge(&sj, &sj, &sterm);
         }
@@ -572,12 +629,14 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(
     secp256k1_ge_set_gej(&out_pt[0], &aj);
     secp256k1_ge_set_gej(&out_pt[1], &sj);
 
-    secp256k1_bulletproof_update_commit(commit, &out_pt[0], &out_pt[1]);
+    if (!secp256k1_bulletproof_update_commit(commit, &out_pt[0], &out_pt[1]))
+        return 0;
     secp256k1_scalar_set_b32(&y, commit, &overflow);
     if (overflow || secp256k1_scalar_is_zero(&y)) {
         return 0;
     }
-    secp256k1_bulletproof_update_commit(commit, &out_pt[0], &out_pt[1]); /* TODO rehashing A and S to get a second challenge is overkill */
+    if (!secp256k1_bulletproof_update_commit(commit, &out_pt[0], &out_pt[1])) /* TODO rehashing A and S to get a second challenge is overkill */
+        return 0;
     secp256k1_scalar_set_b32(&z, commit, &overflow);
     if (overflow || secp256k1_scalar_is_zero(&z)) {
         return 0;
@@ -622,7 +681,8 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(
 
     /* t1 = (A - B)/2 */
     secp256k1_scalar_set_int(&tmps, 2);
-    secp256k1_scalar_inverse_var(&tmps, &tmps);
+    if (!secp256k1_scalar_inverse_var(&tmps, &tmps))
+        return 0;
     secp256k1_scalar_negate(&t2, &t2);
     secp256k1_scalar_add(&t1, &t1, &t2);
     secp256k1_scalar_mul(&t1, &t1, &tmps);
@@ -633,11 +693,13 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(
     secp256k1_scalar_add(&t2, &t2, &t1);
 
     /* Compute Ti = t_i*A + tau_i*G for i = 1,2 */
-    secp256k1_ecmult_const(&tmpj, value_gen, &t1, 256);
+    if (!secp256k1_ecmult_const(&tmpj, value_gen, &t1, 256))
+        return 0;
     if (tge == NULL) {
         /* Normal bulletproof: T1=t1*A + tau1*G */
         secp256k1_ge_set_gej(&out_pt[2], &tmpj);
-        secp256k1_ecmult_const(&tmpj, &gens->blinding_gen[0], &tau1, 256);
+        if (!secp256k1_ecmult_const(&tmpj, &gens->blinding_gen[0], &tau1, 256))
+            return 0;
         secp256k1_gej_add_ge(&tmpj, &tmpj, &out_pt[2]);
     } else {
         /* Multi-party bulletproof: T1=t1*A + sumj tau1j*G */
@@ -645,11 +707,13 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(
     }
     secp256k1_ge_set_gej(&out_pt[2], &tmpj);
 
-    secp256k1_ecmult_const(&tmpj, value_gen, &t2, 256);
+    if (!secp256k1_ecmult_const(&tmpj, value_gen, &t2, 256))
+        return 0;
     if (tge == NULL) {
         /* Normal bulletproof: T1=t1*A + tau1*G */
         secp256k1_ge_set_gej(&out_pt[3], &tmpj);
-        secp256k1_ecmult_const(&tmpj, &gens->blinding_gen[0], &tau2, 256);
+        if (!secp256k1_ecmult_const(&tmpj, &gens->blinding_gen[0], &tau2, 256))
+            return 0;
         secp256k1_gej_add_ge(&tmpj, &tmpj, &out_pt[3]);
     } else {
         /* Multi-party bulletproof: T2=t2*A + sumj tau2j*G */
@@ -657,7 +721,8 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(
     }
     secp256k1_ge_set_gej(&out_pt[3], &tmpj);
 
-    secp256k1_bulletproof_update_commit(commit, &out_pt[2], &out_pt[3]);
+    if (!secp256k1_bulletproof_update_commit(commit, &out_pt[2], &out_pt[3]))
+        return 0;
     secp256k1_scalar_set_b32(&x, commit, &overflow);
     if (overflow || secp256k1_scalar_is_zero(&x)) {
         return 0;
@@ -685,7 +750,7 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(
     if (tauxc != NULL) {
         /* Multi-party bulletproof: taux = sumj tauxj */
         secp256k1_scalar_set_b32(&taux, tauxc, &overflow);
-        if (overflow || secp256k1_scalar_is_zero(&tmps)) {
+        if (overflow || secp256k1_scalar_is_zero(&taux)) {
             return 0;
         }
     }
@@ -700,7 +765,8 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(
     /* Encode rangeproof stuff */
     secp256k1_scalar_get_b32(&proof[0], &taux);
     secp256k1_scalar_get_b32(&proof[32], &mu);
-    secp256k1_bulletproof_serialize_points(&proof[64], out_pt, 4);
+    if (!secp256k1_bulletproof_serialize_points(&proof[64], out_pt, 4))
+        return 0;
 
     /* Mix this into the hash so the input to the inner product proof is fixed */
     secp256k1_sha256_initialize(&sha256);
@@ -712,7 +778,8 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(
     abgh_data.x = x;
     secp256k1_lr_generator_init(&abgh_data.lr_gen, nonce, &y, &z, nbits, value, min_value, n_commits);
     *plen -= 64 + 128 + 1;
-    secp256k1_scalar_inverse_var(&y, &y);
+    if (!secp256k1_scalar_inverse_var(&y, &y))
+        return 0;
     if (secp256k1_bulletproof_inner_product_prove_impl(ecmult_ctx, scratch, &proof[64 + 128 + 1], plen, gens, &y, nbits * n_commits, secp256k1_bulletproof_abgh_callback, (void *) &abgh_data, commit) == 0) {
         return 0;
     }
@@ -721,16 +788,28 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(
     return 1;
 }
 
-static int secp256k1_bulletproof_rangeproof_rewind_impl(uint64_t *value, secp256k1_scalar *blind, const unsigned char *proof, const size_t plen, uint64_t min_value, const secp256k1_pedersen_commitment *pcommit, const secp256k1_generator *value_gen, const unsigned char *nonce, const unsigned char *extra_commit, size_t extra_commit_len, unsigned char *message) {
+/* Note: Rewind proof is not validating the proof. Iven for invalid proof it might return the 1 (success)
+ * It is expected that caller validate proof first, then rewinding it
+ *
+ * Note: If private_nonce value is defined (not NULL), function will validate taux and mu against the
+ * commit (extra layer of validation). At mwc workflow private_nonce normally is unknown
+ */
+static int secp256k1_bulletproof_rangeproof_rewind_impl(uint64_t *value, secp256k1_scalar *blind, const unsigned char *proof,
+            const size_t plen, const uint64_t * min_value, const secp256k1_pedersen_commitment *pcommit, const secp256k1_ge *blind_gen,
+            const secp256k1_generator *value_gen, const unsigned char *nonce, const unsigned char *private_nonce, const unsigned char *extra_commit,
+            size_t extra_commit_len, unsigned char *message)
+{
     secp256k1_sha256 sha256;
-    static const unsigned char zero4[4] = { 0 };
     unsigned char commit[32] = { 0 };
     unsigned char lrparity;
     secp256k1_scalar taux, mu;
     secp256k1_scalar alpha, rho, tau1, tau2;
     secp256k1_scalar x, z;
-    secp256k1_ge commitp, value_genp;
+    secp256k1_ge commitp, value_genp, rewind_commitp;
+    secp256k1_gej rewind_commitj;
+    uint64_t rewind_value;
     int overflow, i;
+    unsigned char diff = 0;
 
     if (plen < 64 + 128 + 1 || plen > SECP256K1_BULLETPROOF_MAX_PROOF) {
         return 0;
@@ -747,19 +826,21 @@ static int secp256k1_bulletproof_rangeproof_rewind_impl(uint64_t *value, secp256
     }
 
     secp256k1_scalar_chacha20(&alpha, &rho, nonce, 0);
-    secp256k1_scalar_chacha20(&tau1, &tau2, nonce, 1);
+    secp256k1_scalar_chacha20(&tau1, &tau2, private_nonce == NULL ? nonce : private_nonce, 1);
 
-    if (min_value > 0) {
+    if (min_value!=NULL) {
         unsigned char vbuf[8];
         const unsigned char len[4] = { 1, 0, 0, 0 };
-        vbuf[0] = min_value;
-        vbuf[1] = min_value >> 8;
-        vbuf[2] = min_value >> 16;
-        vbuf[3] = min_value >> 24;
-        vbuf[4] = min_value >> 32;
-        vbuf[5] = min_value >> 40;
-        vbuf[6] = min_value >> 48;
-        vbuf[7] = min_value >> 56;
+        const uint64_t mv = *min_value;
+
+        vbuf[0] = mv;
+        vbuf[1] = mv >> 8;
+        vbuf[2] = mv >> 16;
+        vbuf[3] = mv >> 24;
+        vbuf[4] = mv >> 32;
+        vbuf[5] = mv >> 40;
+        vbuf[6] = mv >> 48;
+        vbuf[7] = mv >> 56;
         secp256k1_sha256_initialize(&sha256);
         secp256k1_sha256_write(&sha256, commit, 32);
         secp256k1_sha256_write(&sha256, len, 4);
@@ -767,9 +848,17 @@ static int secp256k1_bulletproof_rangeproof_rewind_impl(uint64_t *value, secp256
         secp256k1_sha256_finalize(&sha256, commit);
     }
 
-    secp256k1_pedersen_commitment_load(&commitp, pcommit);
-    secp256k1_generator_load(&value_genp, value_gen);
-    secp256k1_bulletproof_update_commit(commit, &commitp, &value_genp);
+    if (!secp256k1_pedersen_commitment_load(&commitp, pcommit)) {
+        return 0;
+    }
+    if (!secp256k1_generator_load(&value_genp, value_gen)) {
+        return 0;
+    }
+    if (!secp256k1_ge_is_valid_var(&value_genp)) {
+        return 0;
+    }
+    if (!secp256k1_bulletproof_update_commit(commit, &commitp, &value_genp))
+        return 0;
 
     if (extra_commit != NULL) {
         secp256k1_sha256_initialize(&sha256);
@@ -818,19 +907,18 @@ static int secp256k1_bulletproof_rangeproof_rewind_impl(uint64_t *value, secp256
     secp256k1_scalar_add(&mu, &mu, &alpha);
 
     secp256k1_scalar_get_b32(commit, &mu);
-    if (memcmp(commit, zero4, 4) != 0) {
+    /* Don't use memcmp because of non const timing */
+    diff |= commit[0];
+    diff |= commit[1];
+    diff |= commit[2];
+    diff |= commit[3];
+    if (diff != 0) {
         return 0;
     }
-    *value = commit[31] + ((uint64_t) commit[30] << 8) +
-             ((uint64_t) commit[29] << 16) + ((uint64_t) commit[28] << 24) +
-             ((uint64_t) commit[27] << 32) + ((uint64_t) commit[26] << 40) +
-             ((uint64_t) commit[25] << 48) + ((uint64_t) commit[24] << 56);
-
-    if (message != NULL) {
-        for (i=23; i >= 4; i--) {
-            message[i-4] = commit[i];
-        }
-    }
+    rewind_value = commit[31] + ((uint64_t) commit[30] << 8) +
+                   ((uint64_t) commit[29] << 16) + ((uint64_t) commit[28] << 24) +
+                   ((uint64_t) commit[27] << 32) + ((uint64_t) commit[26] << 40) +
+                   ((uint64_t) commit[25] << 48) + ((uint64_t) commit[24] << 56);
 
     /* Derive blinding factor */
     secp256k1_scalar_mul(&tau1, &tau1, &x);
@@ -841,9 +929,41 @@ static int secp256k1_bulletproof_rangeproof_rewind_impl(uint64_t *value, secp256
     secp256k1_scalar_add(&taux, &taux, &tau2);
 
     secp256k1_scalar_sqr(&z, &z);
-    secp256k1_scalar_inverse_var(&z, &z);
+    if (!secp256k1_scalar_inverse_var(&z, &z))
+        return 0;
     secp256k1_scalar_mul(blind, &taux, &z);
     secp256k1_scalar_negate(blind, blind);
+
+    if (private_nonce!=NULL) {
+        /* Addressed issue:
+          The rewind path never verifies the Bulletproof or checks that the recovered `(value, blind)` actually opens `pcommit`.
+          It only parses `taux` and `mu`, recomputes transcript hashes from serialized bytes, and returns success when the
+          recovered `mu` has four leading zero bytes. No call to `secp256k1_bulletproof_rangeproof_verify`/`secp256k1_bulletproof_rangeproof_verify_impl`
+          or equivalent commitment recomputation is performed before returning 1. This means malformed or forged proofs can
+          be accepted as successful rewinds: with an unknown nonce the acceptance condition is only 32 bits, and with the
+          rewind nonce known a malicious prover can choose `mu`/`taux` so rewinding succeeds for attacker-controlled recovered
+          data even when the proof/commit pair is invalid. This contradicts the API contract in `include/secp256k1_bulletproofs.h`
+          that success means the extracted data matched the input commitment.*/
+        if (!secp256k1_pedersen_ecmult(&rewind_commitj, blind, rewind_value, &value_genp, blind_gen))
+            return 0;
+        if (secp256k1_gej_is_infinity(&rewind_commitj)) {
+            return 0;
+        }
+        secp256k1_ge_set_gej(&rewind_commitp, &rewind_commitj);
+
+        if (!secp256k1_fe_equal_var(&rewind_commitp.x, &commitp.x) ||
+            !secp256k1_fe_equal_var(&rewind_commitp.y, &commitp.y))
+        {
+            return 0;
+        }
+    }
+
+    *value = rewind_value;
+    if (message != NULL) {
+        for (i = 23; i >= 4; i--) {
+            message[i - 4] = commit[i];
+        }
+    }
 
     return 1;
 }

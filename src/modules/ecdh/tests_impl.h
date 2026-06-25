@@ -72,6 +72,7 @@ void test_ecdh_generator_basepoint(void) {
 
 void test_bad_scalar(void) {
     unsigned char s_zero[32] = { 0 };
+    unsigned char output_zero[32] = { 0 };
     unsigned char s_overflow[32] = {
         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe,
@@ -89,17 +90,60 @@ void test_bad_scalar(void) {
     CHECK(secp256k1_ec_pubkey_create(ctx, &point, s_rand) == 1);
 
     /* Try to multiply it by bad values */
+    memset(output, 0x01, sizeof(output));
     CHECK(secp256k1_ecdh(ctx, output, &point, s_zero) == 0);
+    CHECK(memcmp(output, output_zero, sizeof(output)) == 0);
+    memset(output, 0x02, sizeof(output));
     CHECK(secp256k1_ecdh(ctx, output, &point, s_overflow) == 0);
+    CHECK(memcmp(output, output_zero, sizeof(output)) == 0);
     /* ...and a good one */
     s_overflow[31] -= 1;
     CHECK(secp256k1_ecdh(ctx, output, &point, s_overflow) == 1);
+}
+
+void test_bad_point(void) {
+    unsigned char s_one[32] = { 0 };
+    unsigned char point_ser[33] = { 0 };
+    unsigned char output[32];
+    unsigned char output_zero[32] = { 0 };
+    int32_t ecount = 0;
+    secp256k1_pubkey point;
+    secp256k1_context *tctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
+
+    s_one[31] = 1;
+    CHECK(secp256k1_ec_pubkey_parse(tctx, &point, point_ser, sizeof(point_ser)) == 0);
+    secp256k1_context_set_illegal_callback(tctx, counting_illegal_callback_fn, &ecount);
+    memset(output, 0x03, sizeof(output));
+
+    CHECK(secp256k1_ecdh(tctx, output, &point, s_one) == 0);
+    CHECK(memcmp(output, output_zero, sizeof(output)) == 0);
+    CHECK(ecount == 1);
+
+    {
+        /* Load off curve point */
+        secp256k1_fe offcurve_x, offcurve_y;
+        secp256k1_ge offcurve_ge;
+
+        secp256k1_fe_set_int(&offcurve_x, 1);
+        secp256k1_fe_set_int(&offcurve_y, 1);
+        secp256k1_ge_set_xy(&offcurve_ge, &offcurve_x, &offcurve_y);
+        secp256k1_pubkey_save(&point, &offcurve_ge);
+
+        ecount = 0;
+        memset(output, 0x04, sizeof(output));
+        CHECK(secp256k1_ecdh(tctx, output, &point, s_one) == 0);
+        CHECK(memcmp(output, output_zero, sizeof(output)) == 0);
+        CHECK(ecount == 1);
+    }
+
+    secp256k1_context_destroy(tctx);
 }
 
 void run_ecdh_tests(void) {
     test_ecdh_api();
     test_ecdh_generator_basepoint();
     test_bad_scalar();
+    test_bad_point();
 }
 
 #endif /* SECP256K1_MODULE_ECDH_TESTS_H */

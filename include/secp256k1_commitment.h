@@ -43,7 +43,7 @@ SECP256K1_API SECP256K1_WARN_UNUSED_RESULT int secp256k1_pedersen_commitment_par
 
 /** Serialize a commitment object into a serialized byte sequence.
  *
- *  Returns: 1 always.
+ *  Returns: 1 on success, 0 on validation failure.
  *  Args:   ctx:        a secp256k1 context object.
  *  Out:    output:     a pointer to a 33-byte byte array
  *  In:     commit:     a pointer to a secp256k1_pedersen_commitment containing an

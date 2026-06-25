@@ -152,7 +152,9 @@ void test_ecdsa_recovery_end_to_end(void) {
     unsigned char privkey[32];
     unsigned char message[32];
     secp256k1_ecdsa_signature signature[5];
+    secp256k1_ecdsa_recoverable_signature invalid_sig;
     secp256k1_ecdsa_recoverable_signature rsignature[5];
+    secp256k1_scalar overflow;
     unsigned char sig[74];
     secp256k1_pubkey pubkey;
     secp256k1_pubkey recpubkey;
@@ -186,6 +188,22 @@ void test_ecdsa_recovery_end_to_end(void) {
     CHECK(secp256k1_ecdsa_recoverable_signature_convert(ctx, &signature[4], &rsignature[4]) == 1);
     CHECK(memcmp(&signature[4], &signature[0], 64) == 0);
     CHECK(secp256k1_ecdsa_verify(ctx, &signature[4], message, &pubkey) == 1);
+    if (sizeof(secp256k1_scalar) == 32) {
+        set_scalar_to_order_raw(&overflow);
+
+        invalid_sig = rsignature[4];
+        overwrite_opaque_scalar(invalid_sig.data, 0, &overflow);
+        CHECK(secp256k1_ecdsa_recoverable_signature_serialize_compact(ctx, sig, &recid, &invalid_sig) == 0);
+        CHECK(secp256k1_ecdsa_recoverable_signature_convert(ctx, &signature[4], &invalid_sig) == 0);
+        CHECK(secp256k1_ecdsa_recover(ctx, &recpubkey, &invalid_sig, message) == 0);
+
+        invalid_sig = rsignature[4];
+        invalid_sig.data[64] = 4;
+        CHECK(secp256k1_ecdsa_recoverable_signature_serialize_compact(ctx, sig, &recid, &invalid_sig) == 0);
+        CHECK(secp256k1_ecdsa_recoverable_signature_convert(ctx, &signature[4], &invalid_sig) == 0);
+        CHECK(secp256k1_ecdsa_recover(ctx, &recpubkey, &invalid_sig, message) == 0);
+    }
+    CHECK(secp256k1_ecdsa_recoverable_signature_serialize_compact(ctx, sig, &recid, &rsignature[4]) == 1);
     memset(&rsignature[4], 0, sizeof(rsignature[4]));
     CHECK(secp256k1_ecdsa_recoverable_signature_parse_compact(ctx, &rsignature[4], sig, recid) == 1);
     CHECK(secp256k1_ecdsa_recoverable_signature_convert(ctx, &signature[4], &rsignature[4]) == 1);

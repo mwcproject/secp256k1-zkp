@@ -18,11 +18,11 @@
     int abs_n = (n) * (((n) > 0) * 2 - 1); \
     int idx_n = abs_n / 2; \
     secp256k1_fe neg_y; \
-    VERIFY_CHECK(((n) & 1) == 1); \
-    VERIFY_CHECK((n) >= -((1 << ((w)-1)) - 1)); \
-    VERIFY_CHECK((n) <=  ((1 << ((w)-1)) - 1)); \
-    VERIFY_SETUP(secp256k1_fe_clear(&(r)->x)); \
-    VERIFY_SETUP(secp256k1_fe_clear(&(r)->y)); \
+    if (((n) & 1) != 1) {return 0;} \
+    if ((n) < -((1 << ((w)-1)) - 1)) {return 0;} \
+    if ((n) >  ((1 << ((w)-1)) - 1)) {return 0;} \
+    secp256k1_fe_clear(&(r)->x); \
+    secp256k1_fe_clear(&(r)->y); \
     for (m = 0; m < ECMULT_TABLE_SIZE(w); m++) { \
         /* This loop is used to avoid secret data in array indices. See
          * the comment in ecmult_gen_impl.h for rationale. */ \
@@ -48,7 +48,7 @@
  *
  *  Numbers reference steps of `Algorithm SPA-resistant Width-w NAF with Odd Scalar` on pp. 335
  */
-static int secp256k1_wnaf_const(int *wnaf, secp256k1_scalar s, int w, int size) {
+static int secp256k1_wnaf_const(int *wnaf, secp256k1_scalar s, int w, int size, int *err) {
     int global_sign;
     int skew = 0;
     int word = 0;
@@ -61,6 +61,10 @@ static int secp256k1_wnaf_const(int *wnaf, secp256k1_scalar s, int w, int size) 
     int bit;
     secp256k1_scalar neg_s;
     int not_neg_one;
+
+    if (*err)
+        return 0;
+
     /* Note that we cannot handle even numbers by negating them to be odd, as is
      * done in other implementations, since if our scalars were specified to have
      * width < 256 for performance reasons, their negations would have width 256
@@ -92,13 +96,17 @@ static int secp256k1_wnaf_const(int *wnaf, secp256k1_scalar s, int w, int size) 
     skew = 1 << bit;
 
     /* 4 */
-    u_last = secp256k1_scalar_shr_int(&s, w);
+    u_last = secp256k1_scalar_shr_int(&s, w, err);
+    if (*err)
+        return 0;
     while (word * w < size) {
         int sign;
         int even;
 
         /* 4.1 4.4 */
-        u = secp256k1_scalar_shr_int(&s, w);
+        u = secp256k1_scalar_shr_int(&s, w, err);
+        if (*err)
+            return 0;
         /* 4.2 */
         even = ((u & 1) == 0);
         sign = 2 * (u_last > 0) - 1;
@@ -112,12 +120,18 @@ static int secp256k1_wnaf_const(int *wnaf, secp256k1_scalar s, int w, int size) 
     }
     wnaf[word] = u * global_sign;
 
-    VERIFY_CHECK(secp256k1_scalar_is_zero(&s));
-    VERIFY_CHECK(word == WNAF_SIZE_BITS(size, w));
+    if (!secp256k1_scalar_is_zero(&s)) {
+        *err = 1;
+        return 0;
+    }
+    if (word != WNAF_SIZE_BITS(size, w)) {
+        *err = 1;
+        return 0;
+    }
     return skew;
 }
 
-static void secp256k1_ecmult_const(secp256k1_gej *r, const secp256k1_ge *a, const secp256k1_scalar *scalar, int size) {
+static int secp256k1_ecmult_const(secp256k1_gej *r, const secp256k1_ge *a, const secp256k1_scalar *scalar, int size) {
     secp256k1_ge pre_a[ECMULT_TABLE_SIZE(WINDOW_A)];
     secp256k1_ge tmpa;
     secp256k1_fe Z;
@@ -138,15 +152,22 @@ static void secp256k1_ecmult_const(secp256k1_gej *r, const secp256k1_ge *a, cons
     int rsize = size;
 #ifdef USE_ENDOMORPHISM
     if (size > 128) {
+        int err = 0;
         rsize = 128;
         /* split q into q_1 and q_lam (where q = q_1 + q_lam*lambda, and q_1 and q_lam are ~128 bit) */
-        secp256k1_scalar_split_lambda(&q_1, &q_lam, &sc);
-        skew_1   = secp256k1_wnaf_const(wnaf_1,   q_1,   WINDOW_A - 1, 128);
-        skew_lam = secp256k1_wnaf_const(wnaf_lam, q_lam, WINDOW_A - 1, 128);
+        if (!secp256k1_scalar_split_lambda(&q_1, &q_lam, &sc))
+            return 0;
+        skew_1   = secp256k1_wnaf_const(wnaf_1,   q_1,   WINDOW_A - 1, 128, &err);
+        skew_lam = secp256k1_wnaf_const(wnaf_lam, q_lam, WINDOW_A - 1, 128, &err);
+        if (err)
+            return 0;
     } else
 #endif
     {
-        skew_1   = secp256k1_wnaf_const(wnaf_1, sc, WINDOW_A - 1, size);
+        int err = 0;
+        skew_1   = secp256k1_wnaf_const(wnaf_1, sc, WINDOW_A - 1, size, &err);
+        if (err)
+            return 0;
 #ifdef USE_ENDOMORPHISM
         skew_lam = 0;
 #endif
@@ -175,13 +196,15 @@ static void secp256k1_ecmult_const(secp256k1_gej *r, const secp256k1_ge *a, cons
      * than having it start at infinity, get doubled several times, then have
      * its new value added to it) */
     i = wnaf_1[WNAF_SIZE_BITS(rsize, WINDOW_A - 1)];
-    VERIFY_CHECK(i != 0);
+    if (i == 0)
+        return 0;
     ECMULT_CONST_TABLE_GET_GE(&tmpa, pre_a, i, WINDOW_A);
     secp256k1_gej_set_ge(r, &tmpa);
 #ifdef USE_ENDOMORPHISM
     if (size > 128) {
         i = wnaf_lam[WNAF_SIZE_BITS(rsize, WINDOW_A - 1)];
-        VERIFY_CHECK(i != 0);
+        if (i == 0)
+            return 0;
         ECMULT_CONST_TABLE_GET_GE(&tmpa, pre_a_lam, i, WINDOW_A);
         secp256k1_gej_add_ge(r, r, &tmpa);
     }
@@ -196,13 +219,15 @@ static void secp256k1_ecmult_const(secp256k1_gej *r, const secp256k1_ge *a, cons
 
         n = wnaf_1[i];
         ECMULT_CONST_TABLE_GET_GE(&tmpa, pre_a, n, WINDOW_A);
-        VERIFY_CHECK(n != 0);
+        if (n == 0)
+            return 0;
         secp256k1_gej_add_ge(r, r, &tmpa);
 #ifdef USE_ENDOMORPHISM
         if (size > 128) {
             n = wnaf_lam[i];
             ECMULT_CONST_TABLE_GET_GE(&tmpa, pre_a_lam, n, WINDOW_A);
-            VERIFY_CHECK(n != 0);
+            if (n == 0)
+                return 0;
             secp256k1_gej_add_ge(r, r, &tmpa);
         }
 #endif
@@ -252,6 +277,7 @@ static void secp256k1_ecmult_const(secp256k1_gej *r, const secp256k1_ge *a, cons
         }
 #endif
     }
+    return 1;
 }
 
 #endif /* SECP256K1_ECMULT_CONST_IMPL_H */

@@ -13,7 +13,8 @@
 extern "C" {
 #endif
 
-#define SECP256K1_WHITELIST_MAX_N_KEYS	256
+// Changed from `256` to `255`. Reason: whitelist signatures encode n_keys in one byte.
+#define SECP256K1_WHITELIST_MAX_N_KEYS	255
 
 /** Opaque data structure that holds a parsed whitelist proof
  *

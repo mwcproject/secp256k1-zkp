@@ -24,38 +24,39 @@ static void secp256k1_num_copy(secp256k1_num *r, const secp256k1_num *a);
 
 /** Convert a number's absolute value to a binary big-endian string.
  *  There must be enough place. */
-static void secp256k1_num_get_bin(unsigned char *r, unsigned int rlen, const secp256k1_num *a);
+static void secp256k1_num_get_bin(unsigned char *r, unsigned int rlen, const secp256k1_num *a, int * err);
 
 /** Set a number to the value of a binary big-endian string. */
-static void secp256k1_num_set_bin(secp256k1_num *r, const unsigned char *a, unsigned int alen);
+static void secp256k1_num_set_bin(secp256k1_num *r, const unsigned char *a, unsigned int alen, int * err);
 
-/** Compute a modular inverse. The input must be less than the modulus. */
-static void secp256k1_num_mod_inverse(secp256k1_num *r, const secp256k1_num *a, const secp256k1_num *m);
+/** Compute a modular inverse for non-negative inputs. The input must be less than the
+ *  positive modulus in limb width. The result is the canonical non-negative residue. */
+static void secp256k1_num_mod_inverse(secp256k1_num *r, const secp256k1_num *a, const secp256k1_num *m, int * err);
 
 /** Compute the jacobi symbol (a|b). b must be positive and odd. */
-static int secp256k1_num_jacobi(const secp256k1_num *a, const secp256k1_num *b);
+static int secp256k1_num_jacobi(const secp256k1_num *a, const secp256k1_num *b, int * err);
 
 /** Compare the absolute value of two numbers. */
-static int secp256k1_num_cmp(const secp256k1_num *a, const secp256k1_num *b);
+static int secp256k1_num_cmp(const secp256k1_num *a, const secp256k1_num *b, int * err);
 
 /** Test whether two number are equal (including sign). */
-static int secp256k1_num_eq(const secp256k1_num *a, const secp256k1_num *b);
+static int secp256k1_num_eq(const secp256k1_num *a, const secp256k1_num *b, int * err);
 
 /** Add two (signed) numbers. */
-static void secp256k1_num_add(secp256k1_num *r, const secp256k1_num *a, const secp256k1_num *b);
+static void secp256k1_num_add(secp256k1_num *r, const secp256k1_num *a, const secp256k1_num *b, int * err);
 
 /** Subtract two (signed) numbers. */
-static void secp256k1_num_sub(secp256k1_num *r, const secp256k1_num *a, const secp256k1_num *b);
+static void secp256k1_num_sub(secp256k1_num *r, const secp256k1_num *a, const secp256k1_num *b, int * err);
 
 /** Multiply two (signed) numbers. */
-static void secp256k1_num_mul(secp256k1_num *r, const secp256k1_num *a, const secp256k1_num *b);
+static void secp256k1_num_mul(secp256k1_num *r, const secp256k1_num *a, const secp256k1_num *b, int * err);
 
 /** Replace a number by its remainder modulo m. M's sign is ignored. The result is a number between 0 and m-1,
     even if r was negative. */
-static void secp256k1_num_mod(secp256k1_num *r, const secp256k1_num *m);
+static void secp256k1_num_mod(secp256k1_num *r, const secp256k1_num *m, int * err);
 
 /** Right-shift the passed number by bits bits. */
-static void secp256k1_num_shift(secp256k1_num *r, int bits);
+static void secp256k1_num_shift(secp256k1_num *r, int bits, int * err);
 
 /** Check whether a number is zero. */
 static int secp256k1_num_is_zero(const secp256k1_num *a);

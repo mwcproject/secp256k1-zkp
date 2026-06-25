@@ -50,12 +50,21 @@ SECP256K1_INLINE static void secp256k1_rangeproof_pub_expand(secp256k1_gej *pubs
     }
 }
 
-SECP256K1_INLINE static void secp256k1_rangeproof_serialize_point(unsigned char* data, const secp256k1_ge *point) {
+/* Return 1 on success and 0 on vailure */
+SECP256K1_INLINE static int secp256k1_rangeproof_serialize_point(unsigned char* data, const secp256k1_ge *point) {
+    int res;
+    int err=0;
+
     secp256k1_fe pointx;
     pointx = point->x;
     secp256k1_fe_normalize(&pointx);
-    data[0] = !secp256k1_fe_is_quad_var(&point->y);
+    res = secp256k1_fe_is_quad_var(&point->y, &err);
+    if (err)
+        return 0;
+
+    data[0] = !res;
     secp256k1_fe_get_b32(data + 1, &pointx);
+    return 1;
 }
 
 SECP256K1_INLINE static int secp256k1_rangeproof_genrand(secp256k1_scalar *sec, secp256k1_scalar *s, unsigned char *message,
@@ -72,8 +81,10 @@ SECP256K1_INLINE static int secp256k1_rangeproof_genrand(secp256k1_scalar *sec, 
     size_t npub;
     VERIFY_CHECK(len <= 10);
     memcpy(rngseed, nonce, 32);
-    secp256k1_rangeproof_serialize_point(rngseed + 32, commit);
-    secp256k1_rangeproof_serialize_point(rngseed + 32 + 33, genp);
+    if (!secp256k1_rangeproof_serialize_point(rngseed + 32, commit))
+        return 0;
+    if (!secp256k1_rangeproof_serialize_point(rngseed + 32 + 33, genp))
+        return 0;
     memcpy(rngseed + 33 + 33 + 32, proof, len);
     secp256k1_rfc6979_hmac_sha256_initialize(&rng, rngseed, 32 + 33 + 33 + len);
     secp256k1_scalar_clear(&acc);
@@ -106,7 +117,7 @@ SECP256K1_INLINE static int secp256k1_rangeproof_genrand(secp256k1_scalar *sec, 
     }
     secp256k1_rfc6979_hmac_sha256_finalize(&rng);
     secp256k1_scalar_clear(&acc);
-    memset(tmp, 0, 32);
+    secp256k1_memclear(tmp, 32);
     return ret;
 }
 
@@ -189,10 +200,11 @@ SECP256K1_INLINE static int secp256k1_range_proveparams(uint64_t *v, size_t *rin
 
 /* strawman interface, writes proof in proof, a buffer of plen, proves with respect to min_value the range for commit which has the provided blinding factor and value. */
 SECP256K1_INLINE static int secp256k1_rangeproof_sign_impl(const secp256k1_ecmult_context* ecmult_ctx,
- const secp256k1_ecmult_gen_context* ecmult_gen_ctx,
- unsigned char *proof, size_t *plen, uint64_t min_value,
- const secp256k1_ge *commit, const unsigned char *blind, const unsigned char *nonce, int exp, int min_bits, uint64_t value,
- const unsigned char *message, size_t msg_len, const unsigned char *extra_commit, size_t extra_commit_len, const secp256k1_ge* genp){
+             const secp256k1_ecmult_gen_context* ecmult_gen_ctx,
+             unsigned char *proof, size_t *plen, uint64_t min_value,
+             const secp256k1_ge *commit, const unsigned char *blind, const unsigned char *nonce, int exp, int min_bits, uint64_t value,
+             const unsigned char *message, size_t msg_len, const unsigned char *extra_commit, size_t extra_commit_len, const secp256k1_ge* genp)
+{
     secp256k1_gej pubs[128];     /* Candidate digits for our proof, most inferred. */
     secp256k1_scalar s[128];     /* Signatures in our proof, most forged. */
     secp256k1_scalar sec[32];    /* Blinding factors for the correct digits. */
@@ -244,9 +256,11 @@ SECP256K1_INLINE static int secp256k1_rangeproof_sign_impl(const secp256k1_ecmul
         return 0;
     }
     secp256k1_sha256_initialize(&sha256_m);
-    secp256k1_rangeproof_serialize_point(tmp, commit);
+    if (!secp256k1_rangeproof_serialize_point(tmp, commit))
+        return 0;
     secp256k1_sha256_write(&sha256_m, tmp, 33);
-    secp256k1_rangeproof_serialize_point(tmp, genp);
+    if (!secp256k1_rangeproof_serialize_point(tmp, genp))
+        return 0;
     secp256k1_sha256_write(&sha256_m, tmp, 33);
     secp256k1_sha256_write(&sha256_m, proof, len);
 
@@ -296,7 +310,8 @@ SECP256K1_INLINE static int secp256k1_rangeproof_sign_impl(const secp256k1_ecmul
     npub = 0;
     for (i = 0; i < rings; i++) {
         /*OPT: Use the precomputed gen2 basis?*/
-        secp256k1_pedersen_ecmult(&pubs[npub], &sec[i], ((uint64_t)secidx[i] * scale) << (i*2), genp, &secp256k1_ge_const_g);
+        if (!secp256k1_pedersen_ecmult(&pubs[npub], &sec[i], ((uint64_t)secidx[i] * scale) << (i*2), genp, &secp256k1_ge_const_g))
+            return 0;
         if (secp256k1_gej_is_infinity(&pubs[npub])) {
             return 0;
         }
@@ -306,8 +321,10 @@ SECP256K1_INLINE static int secp256k1_rangeproof_sign_impl(const secp256k1_ecmul
             unsigned char quadness;
             /*OPT: split loop and batch invert.*/
             /*OPT: do not compute full pubs[npub] in ge form; we only need x */
-            secp256k1_ge_set_gej_var(&c, &pubs[npub]);
-            secp256k1_rangeproof_serialize_point(tmpc, &c);
+            if (!secp256k1_ge_set_gej_var(&c, &pubs[npub]))
+                return 0;
+            if (!secp256k1_rangeproof_serialize_point(tmpc, &c))
+                return 0;
             quadness = tmpc[0];
             secp256k1_sha256_write(&sha256_m, tmpc, 33);
             signs[i>>3] |= quadness << (i&7);
@@ -361,8 +378,10 @@ SECP256K1_INLINE static void secp256k1_rangeproof_ch32xor(unsigned char *x, cons
 }
 
 SECP256K1_INLINE static int secp256k1_rangeproof_rewind_inner(secp256k1_scalar *blind, uint64_t *v,
- unsigned char *m, size_t *mlen, secp256k1_scalar *ev, secp256k1_scalar *s,
- size_t *rsizes, size_t rings, const unsigned char *nonce, const secp256k1_ge *commit, const unsigned char *proof, size_t len, const secp256k1_ge *genp) {
+            unsigned char *m, size_t *mlen, secp256k1_scalar *ev, secp256k1_scalar *s,
+            size_t *rsizes, size_t rings, const unsigned char *nonce, const secp256k1_ge *commit,
+            const unsigned char *proof, size_t len, const secp256k1_ge *genp)
+{
     secp256k1_scalar s_orig[128];
     secp256k1_scalar sec[32];
     secp256k1_scalar stmp;
@@ -381,7 +400,9 @@ SECP256K1_INLINE static int secp256k1_rangeproof_rewind_inner(secp256k1_scalar *
     VERIFY_CHECK(npub >= 1);
     memset(prep, 0, 4096);
     /* Reconstruct the provers random values. */
-    secp256k1_rangeproof_genrand(sec, s_orig, prep, rsizes, rings, nonce, commit, proof, len, genp);
+    if (!secp256k1_rangeproof_genrand(sec, s_orig, prep, rsizes, rings, nonce, commit, proof, len, genp)) {
+        return 0;
+    }
     *v = UINT64_MAX;
     secp256k1_scalar_clear(blind);
     if (rings == 1 && rsizes[0] == 1) {
@@ -423,7 +444,7 @@ SECP256K1_INLINE static int secp256k1_rangeproof_rewind_inner(secp256k1_scalar *
     }
     skip1 = rsizes[rings - 1] - 1 - j;
     skip2 = ((value >> ((rings - 1) << 1)) & 3);
-    if (skip1 == skip2) {
+    if (skip2 >= rsizes[rings - 1] || skip1 == skip2) {
         /*Value is in wrong position.*/
         if (mlen) {
             *mlen = 0;
@@ -538,9 +559,11 @@ SECP256K1_INLINE static int secp256k1_rangeproof_getheader_impl(size_t *offset, 
 
 /* Verifies range proof (len plen) for commit, the min/max values proven are put in the min/max arguments; returns 0 on failure 1 on success.*/
 SECP256K1_INLINE static int secp256k1_rangeproof_verify_impl(const secp256k1_ecmult_context* ecmult_ctx,
- const secp256k1_ecmult_gen_context* ecmult_gen_ctx,
- unsigned char *blindout, uint64_t *value_out, unsigned char *message_out, size_t *outlen, const unsigned char *nonce,
- uint64_t *min_value, uint64_t *max_value, const secp256k1_ge *commit, const unsigned char *proof, size_t plen, const unsigned char *extra_commit, size_t extra_commit_len, const secp256k1_ge* genp) {
+                 const secp256k1_ecmult_gen_context* ecmult_gen_ctx,
+                 unsigned char *blindout, uint64_t *value_out, unsigned char *message_out, size_t *outlen, const unsigned char *nonce,
+                 uint64_t *min_value, uint64_t *max_value, const secp256k1_ge *commit, const unsigned char *proof, size_t plen,
+                 const unsigned char *extra_commit, size_t extra_commit_len, const secp256k1_ge* genp)
+{
     secp256k1_gej accj;
     secp256k1_gej pubs[128];
     secp256k1_ge c;
@@ -586,9 +609,11 @@ SECP256K1_INLINE static int secp256k1_rangeproof_verify_impl(const secp256k1_ecm
         return 0;
     }
     secp256k1_sha256_initialize(&sha256_m);
-    secp256k1_rangeproof_serialize_point(m, commit);
+    if (!secp256k1_rangeproof_serialize_point(m, commit))
+        return 0;
     secp256k1_sha256_write(&sha256_m, m, 33);
-    secp256k1_rangeproof_serialize_point(m, genp);
+    if (!secp256k1_rangeproof_serialize_point(m, genp))
+        return 0;
     secp256k1_sha256_write(&sha256_m, m, 33);
     secp256k1_sha256_write(&sha256_m, proof, offset);
     for(i = 0; i < rings - 1; i++) {
@@ -606,7 +631,8 @@ SECP256K1_INLINE static int secp256k1_rangeproof_verify_impl(const secp256k1_ecm
     if (*min_value) {
         secp256k1_scalar mvs;
         secp256k1_scalar_set_u64(&mvs, *min_value);
-        secp256k1_ecmult_const(&accj, genp, &mvs, 64);
+        if (!secp256k1_ecmult_const(&accj, genp, &mvs, 64))
+            return 0;
         secp256k1_scalar_clear(&mvs);
     }
     for(i = 0; i < rings - 1; i++) {
@@ -665,7 +691,8 @@ SECP256K1_INLINE static int secp256k1_rangeproof_verify_impl(const secp256k1_ecm
         /* Unwind apparently successful, see if the commitment can be reconstructed. */
         /* FIXME: should check vv is in the mantissa's range. */
         vv = (vv * scale) + *min_value;
-        secp256k1_pedersen_ecmult(&accj, &blind, vv, genp, &secp256k1_ge_const_g);
+        if (!secp256k1_pedersen_ecmult(&accj, &blind, vv, genp, &secp256k1_ge_const_g))
+            return 0;
         if (secp256k1_gej_is_infinity(&accj)) {
             return 0;
         }
