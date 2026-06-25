@@ -19,10 +19,16 @@ static int secp256k1_test_rng_precomputed_used = 8;
 static uint64_t secp256k1_test_rng_integer;
 static int secp256k1_test_rng_integer_bits_left = 0;
 
+/* It is a test random generator. It doesn't need to meet crypto security standard and be thread safe */
 SECP256K1_INLINE static void secp256k1_rand_seed(const unsigned char *seed16) {
     secp256k1_rfc6979_hmac_sha256_initialize(&secp256k1_test_rng, seed16, 16);
+    memset(secp256k1_test_rng_precomputed, 0, sizeof(secp256k1_test_rng_precomputed));
+    secp256k1_test_rng_precomputed_used = 8;
+    secp256k1_test_rng_integer = 0;
+    secp256k1_test_rng_integer_bits_left = 0;
 }
 
+/* It is a test random generator. It doesn't need to meet crypto security standard and be thread safe */
 SECP256K1_INLINE static uint32_t secp256k1_rand32(void) {
     if (secp256k1_test_rng_precomputed_used == 8) {
         secp256k1_rfc6979_hmac_sha256_generate(&secp256k1_test_rng, (unsigned char*)(&secp256k1_test_rng_precomputed[0]), sizeof(secp256k1_test_rng_precomputed));
@@ -31,6 +37,7 @@ SECP256K1_INLINE static uint32_t secp256k1_rand32(void) {
     return secp256k1_test_rng_precomputed[secp256k1_test_rng_precomputed_used++];
 }
 
+/* It is a test random generator. It doesn't need to meet crypto security standard and be thread safe */
 static uint32_t secp256k1_rand_bits(int bits) {
     uint32_t ret;
     if (secp256k1_test_rng_integer_bits_left < bits) {
@@ -107,7 +114,7 @@ static void secp256k1_rand256_test(unsigned char *b32) {
     secp256k1_rand_bytes_test(b32, 32);
 }
 
-SECP256K1_INLINE static int64_t secp256k1_rands64(uint64_t min, uint64_t max) {
+SECP256K1_INLINE static uint64_t secp256k1_rands64(uint64_t min, uint64_t max) {
     uint64_t range;
     uint64_t r;
     uint64_t clz;
@@ -121,7 +128,7 @@ SECP256K1_INLINE static int64_t secp256k1_rands64(uint64_t min, uint64_t max) {
         r = ((uint64_t)secp256k1_rand32() << 32) | secp256k1_rand32();
         r >>= clz;
     } while (r > range);
-    return min + (int64_t)r;
+    return min + r;
 }
 
 #endif /* SECP256K1_TESTRAND_IMPL_H */

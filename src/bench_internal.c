@@ -46,8 +46,8 @@ void bench_setup(void* arg) {
 
     secp256k1_scalar_set_b32(&data->scalar_x, init_x, NULL);
     secp256k1_scalar_set_b32(&data->scalar_y, init_y, NULL);
-    secp256k1_fe_set_b32(&data->fe_x, init_x);
-    secp256k1_fe_set_b32(&data->fe_y, init_y);
+    CHECK(secp256k1_fe_set_b32(&data->fe_x, init_x));
+    CHECK(secp256k1_fe_set_b32(&data->fe_y, init_y));
     CHECK(secp256k1_ge_set_xo_var(&data->ge_x, &data->fe_x, 0));
     CHECK(secp256k1_ge_set_xo_var(&data->ge_y, &data->fe_y, 1));
     secp256k1_gej_set_ge(&data->gej_x, &data->ge_x);
@@ -99,7 +99,7 @@ void bench_scalar_split(void* arg) {
 
     for (i = 0; i < 20000; i++) {
         secp256k1_scalar l, r;
-        secp256k1_scalar_split_lambda(&l, &r, &data->scalar_x);
+        CHECK(secp256k1_scalar_split_lambda(&l, &r, &data->scalar_x));
         secp256k1_scalar_add(&data->scalar_x, &data->scalar_x, &data->scalar_y);
     }
 }
@@ -120,7 +120,7 @@ void bench_scalar_inverse_var(void* arg) {
     bench_inv *data = (bench_inv*)arg;
 
     for (i = 0; i < 2000; i++) {
-        secp256k1_scalar_inverse_var(&data->scalar_x, &data->scalar_x);
+        CHECK(secp256k1_scalar_inverse_var(&data->scalar_x, &data->scalar_x));
         secp256k1_scalar_add(&data->scalar_x, &data->scalar_x, &data->scalar_y);
     }
 }
@@ -176,7 +176,7 @@ void bench_field_inverse_var(void* arg) {
     bench_inv *data = (bench_inv*)arg;
 
     for (i = 0; i < 20000; i++) {
-        secp256k1_fe_inv_var(&data->fe_x, &data->fe_x);
+        CHECK(secp256k1_fe_inv_var(&data->fe_x, &data->fe_x));
         secp256k1_fe_add(&data->fe_x, &data->fe_y);
     }
 }
@@ -184,11 +184,21 @@ void bench_field_inverse_var(void* arg) {
 void bench_field_sqrt(void* arg) {
     int i;
     bench_inv *data = (bench_inv*)arg;
+    secp256k1_fe x, r;
 
+    /* Start from a quadratic residue so every sqrt is defined. The sqrt
+     * implementation returns a square root that is itself a square, so
+     * repeated application remains valid without an extra update step. */
+    x = data->fe_x;
+    secp256k1_fe_sqr(&x, &x);
+    secp256k1_fe_normalize(&x);
     for (i = 0; i < 20000; i++) {
-        secp256k1_fe_sqrt(&data->fe_x, &data->fe_x);
-        secp256k1_fe_add(&data->fe_x, &data->fe_y);
+        /* In case of failure we don't want the benchmark to complete, we want it report error and abort. */
+        CHECK(secp256k1_fe_sqrt(&r, &x) == 1);
+        secp256k1_fe_normalize(&r);
+        x = r;
     }
+    data->fe_x = x;
 }
 
 void bench_group_double_var(void* arg) {
@@ -232,7 +242,9 @@ void bench_group_jacobi_var(void* arg) {
     bench_inv *data = (bench_inv*)arg;
 
     for (i = 0; i < 20000; i++) {
-        secp256k1_gej_has_quad_y_var(&data->gej_x);
+        int err = 0;
+        secp256k1_gej_has_quad_y_var(&data->gej_x, &err);
+        CHECK(err==0);
     }
 }
 
@@ -241,7 +253,10 @@ void bench_ecmult_wnaf(void* arg) {
     bench_inv *data = (bench_inv*)arg;
 
     for (i = 0; i < 20000; i++) {
-        secp256k1_ecmult_wnaf(data->wnaf, 256, &data->scalar_x, WINDOW_A);
+        int err = 0;
+        secp256k1_ecmult_wnaf(data->wnaf, 256, &data->scalar_x, WINDOW_A, &err);
+        CHECK(err==0);
+        /* It is a becnhmark, ignoring overflow error */
         secp256k1_scalar_add(&data->scalar_x, &data->scalar_x, &data->scalar_y);
     }
 }
@@ -251,7 +266,10 @@ void bench_wnaf_const(void* arg) {
     bench_inv *data = (bench_inv*)arg;
 
     for (i = 0; i < 20000; i++) {
-        secp256k1_wnaf_const(data->wnaf, data->scalar_x, WINDOW_A, 256);
+        int err = 0;
+        secp256k1_wnaf_const(data->wnaf, data->scalar_x, WINDOW_A, 256, &err);
+        CHECK(err==0);
+        /* It is a becnhmark, ignoring overflow error */
         secp256k1_scalar_add(&data->scalar_x, &data->scalar_x, &data->scalar_y);
     }
 }
@@ -314,12 +332,13 @@ void bench_num_jacobi(void* arg) {
     bench_inv *data = (bench_inv*)arg;
     secp256k1_num nx, norder;
 
-    secp256k1_scalar_get_num(&nx, &data->scalar_x);
-    secp256k1_scalar_order_get_num(&norder);
-    secp256k1_scalar_get_num(&norder, &data->scalar_y);
+    CHECK(secp256k1_scalar_get_num(&nx, &data->scalar_x));
+    CHECK(secp256k1_scalar_order_get_num(&norder));
 
     for (i = 0; i < 200000; i++) {
-        secp256k1_num_jacobi(&nx, &norder);
+        int err = 0;
+        secp256k1_num_jacobi(&nx, &norder, &err);
+        CHECK(err==0);
     }
 }
 #endif

@@ -84,7 +84,7 @@ int main(void) {
     secp256k1_pubkey pubkey;
     secp256k1_ecdsa_signature sig;
     benchmark_verify_t data;
-
+    /* Skipping randomize because it is a benchmark, no needs for high security */
     data.ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
 
     for (i = 0; i < 32; i++) {
@@ -103,8 +103,13 @@ int main(void) {
     run_benchmark("ecdsa_verify", benchmark_verify, NULL, NULL, &data, 10, 20000);
 #ifdef ENABLE_OPENSSL_TESTS
     data.ec_group = EC_GROUP_new_by_curve_name(NID_secp256k1);
-    run_benchmark("ecdsa_verify_openssl", benchmark_verify_openssl, NULL, NULL, &data, 10, 20000);
-    EC_GROUP_free(data.ec_group);
+    if (data.ec_group!=NULL) {
+        run_benchmark("ecdsa_verify_openssl", benchmark_verify_openssl, NULL, NULL, &data, 10, 20000);
+        EC_GROUP_free(data.ec_group);
+    }
+    else {
+        printf("EC_GROUP_new_by_curve_name failed, OpenSSL benchmark wasn't run");
+    }
 #endif
 
     secp256k1_context_destroy(data.ctx);

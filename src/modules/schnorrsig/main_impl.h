@@ -11,6 +11,8 @@
 #include "include/secp256k1_schnorrsig.h"
 #include "hash.h"
 
+static const unsigned char secp256k1_schnorrsig_algo16[16] = "Schnorr+SHA256  ";
+
 int secp256k1_schnorrsig_serialize(const secp256k1_context* ctx, unsigned char *out64, const secp256k1_schnorrsig* sig) {
     (void) ctx;
     VERIFY_CHECK(ctx != NULL);
@@ -41,6 +43,9 @@ int secp256k1_schnorrsig_sign(const secp256k1_context* ctx, secp256k1_schnorrsig
     int overflow;
     unsigned char buf[33];
     size_t buflen = sizeof(buf);
+    const unsigned char *noncealgo16 = NULL;
+    int err = 0;
+    int res;
 
     VERIFY_CHECK(ctx != NULL);
     ARG_CHECK(secp256k1_ecmult_gen_context_is_built(&ctx->ecmult_gen_ctx));
@@ -48,34 +53,43 @@ int secp256k1_schnorrsig_sign(const secp256k1_context* ctx, secp256k1_schnorrsig
     ARG_CHECK(msg32 != NULL);
     ARG_CHECK(seckey != NULL);
 
-    if (noncefp == NULL) {
+    if (noncefp == NULL || noncefp == secp256k1_nonce_function_bipschnorr) {
         noncefp = secp256k1_nonce_function_bipschnorr;
+        noncealgo16 = secp256k1_schnorrsig_algo16;
     }
     secp256k1_scalar_set_b32(&x, seckey, &overflow);
+    memset(sig, 0, sizeof(*sig));
+
     /* Fail if the secret key is invalid. */
     if (overflow || secp256k1_scalar_is_zero(&x)) {
-        memset(sig, 0, sizeof(*sig));
         return 0;
     }
 
-    secp256k1_ecmult_gen(&ctx->ecmult_gen_ctx, &pkj, &x);
+    if (!secp256k1_ecmult_gen(&ctx->ecmult_gen_ctx, &pkj, &x))
+        return 0;
     secp256k1_ge_set_gej(&pk, &pkj);
 
-    if (!noncefp(buf, msg32, seckey, NULL, (void*)ndata, 0)) {
+    if (!noncefp(buf, msg32, seckey, noncealgo16, (void*)ndata, 0)) {
         return 0;
     }
-    secp256k1_scalar_set_b32(&k, buf, NULL);
-    if (secp256k1_scalar_is_zero(&k)) {
+    secp256k1_scalar_set_b32(&k, buf, &overflow);
+    if (overflow || secp256k1_scalar_is_zero(&k)) {
         return 0;
     }
 
-    secp256k1_ecmult_gen(&ctx->ecmult_gen_ctx, &rj, &k);
+    if (!secp256k1_ecmult_gen(&ctx->ecmult_gen_ctx, &rj, &k))
+        return 0;
     secp256k1_ge_set_gej(&r, &rj);
 
     if (nonce_is_negated != NULL) {
         *nonce_is_negated = 0;
     }
-    if (!secp256k1_fe_is_quad_var(&r.y)) {
+    /* This call is not a constant time, so it can leak some nonce info through time measuremnt */
+    res = secp256k1_fe_is_quad_var(&r.y, &err);
+    if (err) {
+        return 0;
+    }
+    if (!res) {
         secp256k1_scalar_negate(&k, &k);
         if (nonce_is_negated != NULL) {
             *nonce_is_negated = 1;
@@ -86,7 +100,9 @@ int secp256k1_schnorrsig_sign(const secp256k1_context* ctx, secp256k1_schnorrsig
 
     secp256k1_sha256_initialize(&sha);
     secp256k1_sha256_write(&sha, &sig->data[0], 32);
-    secp256k1_eckey_pubkey_serialize(&pk, buf, &buflen, 1);
+    if (!secp256k1_eckey_pubkey_serialize(&pk, buf, &buflen, 1)) {
+        return 0;
+    }
     secp256k1_sha256_write(&sha, buf, buflen);
     secp256k1_sha256_write(&sha, msg32, 32);
     secp256k1_sha256_finalize(&sha, buf);
@@ -117,7 +133,8 @@ static int secp256k1_schnorrsig_real_verify(const secp256k1_context* ctx, secp25
     secp256k1_gej_set_ge(&pkj, &pkp);
 
     /* rj =  s*G + (-e)*pkj */
-    secp256k1_ecmult(&ctx->ecmult_ctx, rj, &pkj, &nege, s);
+    if (!secp256k1_ecmult(&ctx->ecmult_ctx, rj, &pkj, &nege, s))
+        return 0;
     return 1;
 }
 
@@ -130,6 +147,8 @@ int secp256k1_schnorrsig_verify(const secp256k1_context* ctx, const secp256k1_sc
     unsigned char buf[33];
     size_t buflen = sizeof(buf);
     int overflow;
+    int res;
+    int err = 0;
 
     VERIFY_CHECK(ctx != NULL);
     ARG_CHECK(secp256k1_ecmult_context_is_built(&ctx->ecmult_ctx));
@@ -148,15 +167,22 @@ int secp256k1_schnorrsig_verify(const secp256k1_context* ctx, const secp256k1_sc
 
     secp256k1_sha256_initialize(&sha);
     secp256k1_sha256_write(&sha, &sig->data[0], 32);
-    secp256k1_ec_pubkey_serialize(ctx, buf, &buflen, pk, SECP256K1_EC_COMPRESSED);
+    if (!secp256k1_ec_pubkey_serialize(ctx, buf, &buflen, pk, SECP256K1_EC_COMPRESSED)) {
+        return 0;
+    }
     secp256k1_sha256_write(&sha, buf, buflen);
     secp256k1_sha256_write(&sha, msg32, 32);
     secp256k1_sha256_finalize(&sha, buf);
     secp256k1_scalar_set_b32(&e, buf, NULL);
 
-    if (!secp256k1_schnorrsig_real_verify(ctx, &rj, &s, &e, pk)
-        || !secp256k1_gej_has_quad_y_var(&rj) /* fails if rj is infinity */
-        || !secp256k1_gej_eq_x_var(&rx, &rj)) {
+    /* Order of execution, res1 must follow res0 */
+    res = !secp256k1_schnorrsig_real_verify(ctx, &rj, &s, &e, pk);
+    res = res || !secp256k1_gej_has_quad_y_var(&rj, &err);  /* fails if rj is infinity */
+    if (err) {
+        return 0;
+    }
+
+    if (res || !secp256k1_gej_eq_x_var(&rx, &rj)) {
         return 0;
     }
 
@@ -183,6 +209,10 @@ typedef struct {
  * consisting of signature, message and public key tuples into scalars and points. */
 static int secp256k1_schnorrsig_verify_batch_ecmult_callback(secp256k1_scalar *sc, secp256k1_ge *pt, size_t idx, void *data) {
     secp256k1_schnorrsig_verify_ecmult_context *ecmult_context = (secp256k1_schnorrsig_verify_ecmult_context *) data;
+
+    if (ecmult_context->sig[idx/2]==NULL || ecmult_context->msg32[idx/2]==NULL) {
+        return 0;
+    }
 
     if (idx % 4 == 2) {
         /* Every idx corresponds to a (scalar,point)-tuple. So this callback is called with 4
@@ -211,7 +241,9 @@ static int secp256k1_schnorrsig_verify_batch_ecmult_callback(secp256k1_scalar *s
         secp256k1_sha256 sha;
         secp256k1_sha256_initialize(&sha);
         secp256k1_sha256_write(&sha, &ecmult_context->sig[idx / 2]->data[0], 32);
-        secp256k1_ec_pubkey_serialize(ecmult_context->ctx, buf, &buflen, ecmult_context->pk[idx / 2], SECP256K1_EC_COMPRESSED);
+        if (!secp256k1_ec_pubkey_serialize(ecmult_context->ctx, buf, &buflen, ecmult_context->pk[idx / 2], SECP256K1_EC_COMPRESSED)) {
+            return 0;
+        }
         secp256k1_sha256_write(&sha, buf, buflen);
         secp256k1_sha256_write(&sha, ecmult_context->msg32[idx / 2], 32);
         secp256k1_sha256_finalize(&sha, buf);
@@ -252,10 +284,16 @@ int secp256k1_schnorrsig_verify_batch_init_randomizer(const secp256k1_context *c
     for (i = 0; i < n_sigs; i++) {
         unsigned char buf[33];
         size_t buflen = sizeof(buf);
+
+        if (sig[i]==NULL || msg32[i]==NULL || pk[i]==NULL) {
+            return 0;
+        }
         secp256k1_sha256_write(sha, sig[i]->data, 64);
         secp256k1_sha256_write(sha, msg32[i], 32);
-        secp256k1_ec_pubkey_serialize(ctx, buf, &buflen, pk[i], SECP256K1_EC_COMPRESSED);
-        secp256k1_sha256_write(sha, buf, 32);
+        if (!secp256k1_ec_pubkey_serialize(ctx, buf, &buflen, pk[i], SECP256K1_EC_COMPRESSED)) {
+            return 0;
+        }
+        secp256k1_sha256_write(sha, buf, buflen);
     }
     ecmult_context->ctx = ctx;
     ecmult_context->sig = sig;
@@ -316,7 +354,7 @@ int secp256k1_schnorrsig_verify_batch(const secp256k1_context *ctx, secp256k1_sc
     ARG_CHECK(n_sigs <= SIZE_MAX / 2);
     /* Check that n_sigs is less than 2^31 to ensure the same behavior of this function on 32-bit
      * and 64-bit platforms. */
-    ARG_CHECK(n_sigs < (size_t)(1 << 31));
+    ARG_CHECK(n_sigs < ((size_t)1) << 31);
 
     secp256k1_sha256_initialize(&sha);
     if (!secp256k1_schnorrsig_verify_batch_init_randomizer(ctx, &ecmult_context, &sha, sig, msg32, pk, n_sigs)) {

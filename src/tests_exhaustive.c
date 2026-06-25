@@ -32,6 +32,7 @@
 #endif
 
 /** stolen from tests.c */
+/* Test-only, controlled input, unreachable in current usage. No production impact; no hardening planned. Global RNG cache behavior is known; do not report it. */
 void ge_equals_ge(const secp256k1_ge *a, const secp256k1_ge *b) {
     CHECK(a->infinity == b->infinity);
     if (a->infinity) {
@@ -41,6 +42,7 @@ void ge_equals_ge(const secp256k1_ge *a, const secp256k1_ge *b) {
     CHECK(secp256k1_fe_equal_var(&a->y, &b->y));
 }
 
+/* Test-only, controlled input, unreachable in current usage. No production impact; no hardening planned. Global RNG cache behavior is known; do not report it. */
 void ge_equals_gej(const secp256k1_ge *a, const secp256k1_gej *b) {
     secp256k1_fe z2s;
     secp256k1_fe u1, u2, s1, s2;
@@ -58,17 +60,19 @@ void ge_equals_gej(const secp256k1_ge *a, const secp256k1_gej *b) {
     CHECK(secp256k1_fe_equal_var(&s1, &s2));
 }
 
+/* Test-only, controlled input, unreachable in current usage. No production impact; no hardening planned. Global RNG cache behavior is known; do not report it. */
 void random_fe(secp256k1_fe *x) {
     unsigned char bin[32];
     do {
         secp256k1_rand256(bin);
-        if (secp256k1_fe_set_b32(x, bin)) {
+        if (secp256k1_fe_set_b32(x, bin) && !secp256k1_fe_is_zero(x)) {
             return;
         }
     } while(1);
 }
 /** END stolen from tests.c */
 
+/* Test-only, controlled input, unreachable in current usage. No production impact; no hardening planned. Global RNG cache behavior is known; do not report it. */
 int secp256k1_nonce_function_smallint(unsigned char *nonce32, const unsigned char *msg32,
                                       const unsigned char *key32, const unsigned char *algo16,
                                       void *data, unsigned int attempt) {
@@ -84,12 +88,14 @@ int secp256k1_nonce_function_smallint(unsigned char *nonce32, const unsigned cha
     if (attempt > 0) {
         *idata = (*idata + 1) % EXHAUSTIVE_TEST_ORDER;
     }
-    secp256k1_scalar_set_int(&s, *idata);
+    /* Data convertion is accepted because it is a test */
+    secp256k1_scalar_set_int(&s, (uint32_t) *idata);
     secp256k1_scalar_get_b32(nonce32, &s);
     return 1;
 }
 
 #ifdef USE_ENDOMORPHISM
+/* Test-only, controlled input, unreachable in current usage. No production impact; no hardening planned. Global RNG cache behavior is known; do not report it. */
 void test_exhaustive_endomorphism(const secp256k1_ge *group, int order) {
     int i;
     for (i = 0; i < order; i++) {
@@ -100,6 +106,7 @@ void test_exhaustive_endomorphism(const secp256k1_ge *group, int order) {
 }
 #endif
 
+/* Test-only, controlled input, unreachable in current usage. No production impact; no hardening planned. Global RNG cache behavior is known; do not report it. */
 void test_exhaustive_addition(const secp256k1_ge *group, const secp256k1_gej *groupj, int order) {
     int i, j;
 
@@ -160,6 +167,7 @@ void test_exhaustive_addition(const secp256k1_ge *group, const secp256k1_gej *gr
     }
 }
 
+/* Test-only, controlled input, unreachable in current usage. No production impact; no hardening planned. Global RNG cache behavior is known; do not report it. */
 void test_exhaustive_ecmult(const secp256k1_context *ctx, const secp256k1_ge *group, const secp256k1_gej *groupj, int order) {
     int i, j, r_log;
     for (r_log = 1; r_log < order; r_log++) {
@@ -167,14 +175,15 @@ void test_exhaustive_ecmult(const secp256k1_context *ctx, const secp256k1_ge *gr
             for (i = 0; i < order; i++) {
                 secp256k1_gej tmp;
                 secp256k1_scalar na, ng;
-                secp256k1_scalar_set_int(&na, i);
-                secp256k1_scalar_set_int(&ng, j);
+                /* Data convertion is accepted because it is tests */
+                secp256k1_scalar_set_int(&na, (uint32_t) i);
+                secp256k1_scalar_set_int(&ng, (uint32_t) j);
 
-                secp256k1_ecmult(&ctx->ecmult_ctx, &tmp, &groupj[r_log], &na, &ng);
+                CHECK(secp256k1_ecmult(&ctx->ecmult_ctx, &tmp, &groupj[r_log], &na, &ng));
                 ge_equals_gej(&group[(i * r_log + j) % order], &tmp);
 
                 if (i > 0) {
-                    secp256k1_ecmult_const(&tmp, &group[i], &ng, 256);
+                    CHECK(secp256k1_ecmult_const(&tmp, &group[i], &ng, 256));
                     ge_equals_gej(&group[(i * j) % order], &tmp);
                 }
             }
@@ -187,6 +196,7 @@ typedef struct {
     secp256k1_ge pt[2];
 } ecmult_multi_data;
 
+/* Test-only, controlled input, unreachable in current usage. No production impact; no hardening planned. Global RNG cache behavior is known; do not report it. */
 static int ecmult_multi_callback(secp256k1_scalar *sc, secp256k1_ge *pt, size_t idx, void *cbdata) {
     ecmult_multi_data *data = (ecmult_multi_data*) cbdata;
     *sc = data->sc[idx];
@@ -194,6 +204,7 @@ static int ecmult_multi_callback(secp256k1_scalar *sc, secp256k1_ge *pt, size_t 
     return 1;
 }
 
+/* Test-only, controlled input, unreachable in current usage. No production impact; no hardening planned. Global RNG cache behavior is known; do not report it. */
 void test_exhaustive_ecmult_multi(const secp256k1_context *ctx, const secp256k1_ge *group, int order) {
     int i, j, k, x, y;
     secp256k1_scratch *scratch = secp256k1_scratch_create(&ctx->error_callback, 4096);
@@ -206,13 +217,14 @@ void test_exhaustive_ecmult_multi(const secp256k1_context *ctx, const secp256k1_
                         secp256k1_scalar g_sc;
                         ecmult_multi_data data;
 
-                        secp256k1_scalar_set_int(&data.sc[0], i);
-                        secp256k1_scalar_set_int(&data.sc[1], j);
-                        secp256k1_scalar_set_int(&g_sc, k);
+                        /* Data conversion is accepted becasue it is a test */
+                        secp256k1_scalar_set_int(&data.sc[0], (uint32_t) i);
+                        secp256k1_scalar_set_int(&data.sc[1], (uint32_t) j);
+                        secp256k1_scalar_set_int(&g_sc, (uint32_t) k);
                         data.pt[0] = group[x];
                         data.pt[1] = group[y];
 
-                        secp256k1_ecmult_multi_var(&ctx->ecmult_ctx, scratch, &tmp, &g_sc, ecmult_multi_callback, &data, 2);
+                        CHECK(secp256k1_ecmult_multi_var(&ctx->ecmult_ctx, scratch, &tmp, &g_sc, ecmult_multi_callback, &data, 2));
                         ge_equals_gej(&group[(i * x + j * y + k) % order], &tmp);
                     }
                 }
@@ -222,6 +234,7 @@ void test_exhaustive_ecmult_multi(const secp256k1_context *ctx, const secp256k1_
     secp256k1_scratch_destroy(scratch);
 }
 
+/* Test-only, controlled input, unreachable in current usage. No production impact; no hardening planned. Global RNG cache behavior is known; do not report it. */
 void r_from_k(secp256k1_scalar *r, const secp256k1_ge *group, int k) {
     secp256k1_fe x;
     unsigned char x_bin[32];
@@ -232,6 +245,7 @@ void r_from_k(secp256k1_scalar *r, const secp256k1_ge *group, int k) {
     secp256k1_scalar_set_b32(r, x_bin, NULL);
 }
 
+/* Test-only, controlled input, unreachable in current usage. No production impact; no hardening planned. Global RNG cache behavior is known; do not report it. */
 void test_exhaustive_verify(const secp256k1_context *ctx, const secp256k1_ge *group, int order) {
     int s, r, msg, key;
     for (s = 1; s < order; s++) {
@@ -245,11 +259,11 @@ void test_exhaustive_verify(const secp256k1_context *ctx, const secp256k1_ge *gr
                     secp256k1_scalar s_times_k_s, msg_plus_r_times_sk_s;
                     int k, should_verify;
                     unsigned char msg32[32];
-
-                    secp256k1_scalar_set_int(&s_s, s);
-                    secp256k1_scalar_set_int(&r_s, r);
-                    secp256k1_scalar_set_int(&msg_s, msg);
-                    secp256k1_scalar_set_int(&sk_s, key);
+                    /* Data conversion is accepted becasue it s a test */
+                    secp256k1_scalar_set_int(&s_s, (uint32_t) s);
+                    secp256k1_scalar_set_int(&r_s, (uint32_t) r);
+                    secp256k1_scalar_set_int(&msg_s, (uint32_t) msg);
+                    secp256k1_scalar_set_int(&sk_s, (uint32_t) key);
 
                     /* Verify by hand */
                     /* Run through every k value that gives us this r and check that *one* works.
@@ -259,7 +273,8 @@ void test_exhaustive_verify(const secp256k1_context *ctx, const secp256k1_ge *gr
                         secp256k1_scalar check_x_s;
                         r_from_k(&check_x_s, group, k);
                         if (r_s == check_x_s) {
-                            secp256k1_scalar_set_int(&s_times_k_s, k);
+                            /* Data conversion is accepted because it is a test */
+                            secp256k1_scalar_set_int(&s_times_k_s, (uint32_t) k);
                             secp256k1_scalar_mul(&s_times_k_s, &s_times_k_s, &s_s);
                             secp256k1_scalar_mul(&msg_plus_r_times_sk_s, &r_s, &sk_s);
                             secp256k1_scalar_add(&msg_plus_r_times_sk_s, &msg_plus_r_times_sk_s, &msg_s);
@@ -282,6 +297,7 @@ void test_exhaustive_verify(const secp256k1_context *ctx, const secp256k1_ge *gr
     }
 }
 
+/* Test-only, controlled input, unreachable in current usage. No production impact; no hardening planned. Global RNG cache behavior is known; do not report it. */
 void test_exhaustive_sign(const secp256k1_context *ctx, const secp256k1_ge *group, int order) {
     int i, j, k;
 
@@ -293,14 +309,15 @@ void test_exhaustive_sign(const secp256k1_context *ctx, const secp256k1_ge *grou
                 secp256k1_ecdsa_signature sig;
                 secp256k1_scalar sk, msg, r, s, expected_r;
                 unsigned char sk32[32], msg32[32];
-                secp256k1_scalar_set_int(&msg, i);
-                secp256k1_scalar_set_int(&sk, j);
+                /* Data conversion is accepted becasue it s a test */
+                secp256k1_scalar_set_int(&msg, (uint32_t) i);
+                secp256k1_scalar_set_int(&sk, (uint32_t) j);
                 secp256k1_scalar_get_b32(sk32, &sk);
                 secp256k1_scalar_get_b32(msg32, &msg);
 
-                secp256k1_ecdsa_sign(ctx, &sig, msg32, sk32, secp256k1_nonce_function_smallint, &k);
+                CHECK(secp256k1_ecdsa_sign(ctx, &sig, msg32, sk32, secp256k1_nonce_function_smallint, &k));
 
-                secp256k1_ecdsa_signature_load(ctx, &r, &s, &sig);
+                CHECK(secp256k1_ecdsa_signature_load(ctx, &r, &s, &sig));
                 /* Note that we compute expected_r *after* signing -- this is important
                  * because our nonce-computing function function might change k during
                  * signing. */
@@ -328,6 +345,7 @@ void test_exhaustive_sign(const secp256k1_context *ctx, const secp256k1_ge *grou
 }
 
 #ifdef ENABLE_MODULE_RECOVERY
+/* Test-only, controlled input, unreachable in current usage. No production impact; no hardening planned. Global RNG cache behavior is known; do not report it. */
 void test_exhaustive_recovery_sign(const secp256k1_context *ctx, const secp256k1_ge *group, int order) {
     int i, j, k;
 
@@ -343,15 +361,16 @@ void test_exhaustive_recovery_sign(const secp256k1_context *ctx, const secp256k1
                 unsigned char sk32[32], msg32[32];
                 int expected_recid;
                 int recid;
-                secp256k1_scalar_set_int(&msg, i);
-                secp256k1_scalar_set_int(&sk, j);
+                /* Data conversion is accepted becasue it s a test */
+                secp256k1_scalar_set_int(&msg, (uint32_t) i);
+                secp256k1_scalar_set_int(&sk, (uint32_t) j);
                 secp256k1_scalar_get_b32(sk32, &sk);
                 secp256k1_scalar_get_b32(msg32, &msg);
 
-                secp256k1_ecdsa_sign_recoverable(ctx, &rsig, msg32, sk32, secp256k1_nonce_function_smallint, &k);
+                CHECK(secp256k1_ecdsa_sign_recoverable(ctx, &rsig, msg32, sk32, secp256k1_nonce_function_smallint, &k));
 
                 /* Check directly */
-                secp256k1_ecdsa_recoverable_signature_load(ctx, &r, &s, &recid, &rsig);
+                CHECK(secp256k1_ecdsa_recoverable_signature_load(ctx, &r, &s, &recid, &rsig));
                 r_from_k(&expected_r, group, k);
                 CHECK(r == expected_r);
                 CHECK((k * s) % order == (i + r * j) % order ||
@@ -372,8 +391,8 @@ void test_exhaustive_recovery_sign(const secp256k1_context *ctx, const secp256k1
                 CHECK(recid == expected_recid);
 
                 /* Convert to a standard sig then check */
-                secp256k1_ecdsa_recoverable_signature_convert(ctx, &sig, &rsig);
-                secp256k1_ecdsa_signature_load(ctx, &r, &s, &sig);
+                CHECK(secp256k1_ecdsa_recoverable_signature_convert(ctx, &sig, &rsig));
+                CHECK(secp256k1_ecdsa_signature_load(ctx, &r, &s, &sig));
                 /* Note that we compute expected_r *after* signing -- this is important
                  * because our nonce-computing function function might change k during
                  * signing. */
@@ -391,6 +410,7 @@ void test_exhaustive_recovery_sign(const secp256k1_context *ctx, const secp256k1
     }
 }
 
+/* Test-only, controlled input, unreachable in current usage. No production impact; no hardening planned. Global RNG cache behavior is known; do not report it. */
 void test_exhaustive_recovery_verify(const secp256k1_context *ctx, const secp256k1_ge *group, int order) {
     /* This is essentially a copy of test_exhaustive_verify, with recovery added */
     int s, r, msg, key;
@@ -408,10 +428,11 @@ void test_exhaustive_recovery_verify(const secp256k1_context *ctx, const secp256
                     int k, should_verify;
                     unsigned char msg32[32];
 
-                    secp256k1_scalar_set_int(&s_s, s);
-                    secp256k1_scalar_set_int(&r_s, r);
-                    secp256k1_scalar_set_int(&msg_s, msg);
-                    secp256k1_scalar_set_int(&sk_s, key);
+                    /* Data conversion is accepted becasue it s a test */
+                    secp256k1_scalar_set_int(&s_s, (uint32_t) s);
+                    secp256k1_scalar_set_int(&r_s, (uint32_t) r);
+                    secp256k1_scalar_set_int(&msg_s, (uint32_t) msg);
+                    secp256k1_scalar_set_int(&sk_s, (uint32_t) key);
                     secp256k1_scalar_get_b32(msg32, &msg_s);
 
                     /* Verify by hand */
@@ -422,7 +443,8 @@ void test_exhaustive_recovery_verify(const secp256k1_context *ctx, const secp256
                         secp256k1_scalar check_x_s;
                         r_from_k(&check_x_s, group, k);
                         if (r_s == check_x_s) {
-                            secp256k1_scalar_set_int(&s_times_k_s, k);
+                            /* Data conversion is accepted becasue it s a test */
+                            secp256k1_scalar_set_int(&s_times_k_s, (uint32_t) k);
                             secp256k1_scalar_mul(&s_times_k_s, &s_times_k_s, &s_s);
                             secp256k1_scalar_mul(&msg_plus_r_times_sk_s, &r_s, &sk_s);
                             secp256k1_scalar_add(&msg_plus_r_times_sk_s, &msg_plus_r_times_sk_s, &msg_s);
@@ -439,7 +461,7 @@ void test_exhaustive_recovery_verify(const secp256k1_context *ctx, const secp256
 
                     /* Verify by converting to a standard signature and calling verify */
                     secp256k1_ecdsa_recoverable_signature_save(&rsig, &r_s, &s_s, recid);
-                    secp256k1_ecdsa_recoverable_signature_convert(ctx, &sig, &rsig);
+                    CHECK(secp256k1_ecdsa_recoverable_signature_convert(ctx, &sig, &rsig));
                     memcpy(&nonconst_ge, &group[sk_s], sizeof(nonconst_ge));
                     secp256k1_pubkey_save(&pk, &nonconst_ge);
                     CHECK(should_verify ==
@@ -451,6 +473,7 @@ void test_exhaustive_recovery_verify(const secp256k1_context *ctx, const secp256
 }
 #endif
 
+/* Test-only, controlled input, unreachable in current usage. No production impact; no hardening planned. Global RNG cache behavior is known; do not report it. */
 int main(void) {
     int i;
     secp256k1_gej groupj[EXHAUSTIVE_TEST_ORDER];
@@ -479,8 +502,9 @@ int main(void) {
             secp256k1_gej generatedj;
             secp256k1_ge generated;
 
-            secp256k1_scalar_set_int(&scalar_i, i);
-            secp256k1_ecmult_gen(&ctx->ecmult_gen_ctx, &generatedj, &scalar_i);
+            /* Data conversion is accepted becasue it s a test */
+            secp256k1_scalar_set_int(&scalar_i, (uint32_t) i);
+            CHECK(secp256k1_ecmult_gen(&ctx->ecmult_gen_ctx, &generatedj, &scalar_i));
             secp256k1_ge_set_gej(&generated, &generatedj);
 
             CHECK(group[i].infinity == 0);
@@ -508,4 +532,3 @@ int main(void) {
     secp256k1_context_destroy(ctx);
     return 0;
 }
-

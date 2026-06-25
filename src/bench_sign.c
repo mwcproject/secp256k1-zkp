@@ -30,13 +30,12 @@ static void bench_sign_run(void* arg) {
     int i;
     bench_sign *data = (bench_sign*)arg;
 
-    unsigned char sig[74];
+    unsigned char sig[64];
     for (i = 0; i < 20000; i++) {
-        size_t siglen = 74;
         int j;
         secp256k1_ecdsa_signature signature;
         CHECK(secp256k1_ecdsa_sign(data->ctx, &signature, data->msg, data->key, NULL, NULL));
-        CHECK(secp256k1_ecdsa_signature_serialize_der(data->ctx, sig, &siglen, &signature));
+        CHECK(secp256k1_ecdsa_signature_serialize_compact(data->ctx, sig, &signature));
         for (j = 0; j < 32; j++) {
             data->msg[j] = sig[j];
             data->key[j] = sig[j + 32];
@@ -46,7 +45,7 @@ static void bench_sign_run(void* arg) {
 
 int main(void) {
     bench_sign data;
-
+    /* Skipping randomize because it is a benchmark, no needs for high security */
     data.ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
 
     run_benchmark("ecdsa_sign", bench_sign_run, bench_sign_setup, NULL, &data, 10, 20000);

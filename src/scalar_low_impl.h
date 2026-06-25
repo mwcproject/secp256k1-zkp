@@ -15,19 +15,27 @@ SECP256K1_INLINE static int secp256k1_scalar_is_even(const secp256k1_scalar *a) 
     return !(*a & 1);
 }
 
-SECP256K1_INLINE static void secp256k1_scalar_clear(secp256k1_scalar *r) { *r = 0; }
-SECP256K1_INLINE static void secp256k1_scalar_set_int(secp256k1_scalar *r, unsigned int v) { *r = v; }
+SECP256K1_INLINE static void secp256k1_scalar_clear(secp256k1_scalar *r) { secp256k1_memclear(r, sizeof(*r)); }
+SECP256K1_INLINE static void secp256k1_scalar_set_int(secp256k1_scalar *r, uint32_t v) { *r = v; }
 SECP256K1_INLINE static void secp256k1_scalar_set_u64(secp256k1_scalar *r, uint64_t v) { *r = v % EXHAUSTIVE_TEST_ORDER; }
 
-SECP256K1_INLINE static unsigned int secp256k1_scalar_get_bits(const secp256k1_scalar *a, unsigned int offset, unsigned int count) {
+SECP256K1_INLINE static unsigned int secp256k1_scalar_get_bits(const secp256k1_scalar *a, unsigned int offset, unsigned int count, int * err) {
+    if (*err)
+        return 0;
+
+    if (count==0 || count >= 32 || offset>256 || offset + count > 256) {
+        *err = 1;
+        return 0;
+    }
+
     if (offset < 32)
         return ((*a >> offset) & ((((uint32_t)1) << count) - 1));
     else
         return 0;
 }
 
-SECP256K1_INLINE static unsigned int secp256k1_scalar_get_bits_var(const secp256k1_scalar *a, unsigned int offset, unsigned int count) {
-    return secp256k1_scalar_get_bits(a, offset, count);
+SECP256K1_INLINE static unsigned int secp256k1_scalar_get_bits_var(const secp256k1_scalar *a, unsigned int offset, unsigned int count, int * err) {
+    return secp256k1_scalar_get_bits(a, offset, count, err);
 }
 
 SECP256K1_INLINE static int secp256k1_scalar_check_overflow(const secp256k1_scalar *a) { return *a >= EXHAUSTIVE_TEST_ORDER; }
@@ -39,7 +47,7 @@ static int secp256k1_scalar_add(secp256k1_scalar *r, const secp256k1_scalar *a, 
 
 static void secp256k1_scalar_cadd_bit(secp256k1_scalar *r, unsigned int bit, int flag) {
     if (flag && bit < 32)
-        *r += (1 << bit);
+        *r += ((uint32_t)1 << bit);
 #ifdef VERIFY
     VERIFY_CHECK(secp256k1_scalar_check_overflow(r) == 0);
 #endif
@@ -90,10 +98,17 @@ static void secp256k1_scalar_mul(secp256k1_scalar *r, const secp256k1_scalar *a,
     *r = (*a * *b) % EXHAUSTIVE_TEST_ORDER;
 }
 
-static int secp256k1_scalar_shr_int(secp256k1_scalar *r, int n) {
+static int secp256k1_scalar_shr_int(secp256k1_scalar *r, int n, int * err) {
     int ret;
-    VERIFY_CHECK(n > 0);
-    VERIFY_CHECK(n < 16);
+
+    if (*err)
+        return 0;
+
+    if (n <= 0 || n >= 16) {
+        *err = 1;
+        return 0;
+    }
+
     ret = *r & ((1 << n) - 1);
     *r >>= n;
     return ret;
@@ -112,6 +127,8 @@ SECP256K1_INLINE static int secp256k1_scalar_eq(const secp256k1_scalar *a, const
     return *a == *b;
 }
 
+/* This implementation does not implement the documented ChaCha20-based scalar generator. It is for for testing usage
+ * only, not for production */
 SECP256K1_INLINE static void secp256k1_scalar_chacha20(secp256k1_scalar *r1, secp256k1_scalar *r2, const unsigned char *seed, uint64_t n) {
     *r1 = (seed[0] + n) % EXHAUSTIVE_TEST_ORDER;
     *r2 = (seed[1] + n) % EXHAUSTIVE_TEST_ORDER;

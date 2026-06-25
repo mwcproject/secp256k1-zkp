@@ -24,9 +24,11 @@
 
 static void secp256k1_ecmult_gen_context_init(secp256k1_ecmult_gen_context *ctx) {
     ctx->prec = NULL;
+    secp256k1_scalar_clear(&ctx->blind);
+    secp256k1_gej_clear(&ctx->initial);
 }
 
-static void secp256k1_ecmult_gen_context_build(secp256k1_ecmult_gen_context *ctx, void **prealloc) {
+static int secp256k1_ecmult_gen_context_build(secp256k1_ecmult_gen_context *ctx, void **prealloc) {
 #ifndef USE_ECMULT_STATIC_PRECOMPUTATION
     secp256k1_ge prec[1024];
     secp256k1_gej gj;
@@ -37,7 +39,7 @@ static void secp256k1_ecmult_gen_context_build(secp256k1_ecmult_gen_context *ctx
 #endif
 
     if (ctx->prec != NULL) {
-        return;
+        return 1;
     }
 #ifndef USE_ECMULT_STATIC_PRECOMPUTATION
     ctx->prec = (secp256k1_ge_storage (*)[64][16])manual_alloc(prealloc, prealloc_size, base, prealloc_size);
@@ -50,13 +52,14 @@ static void secp256k1_ecmult_gen_context_build(secp256k1_ecmult_gen_context *ctx
         static const unsigned char nums_b32[33] = "The scalar for this x is unknown";
         secp256k1_fe nums_x;
         secp256k1_ge nums_ge;
-        int r;
-        r = secp256k1_fe_set_b32(&nums_x, nums_b32);
-        (void)r;
-        VERIFY_CHECK(r);
-        r = secp256k1_ge_set_xo_var(&nums_ge, &nums_x, 0);
-        (void)r;
-        VERIFY_CHECK(r);
+        if (!secp256k1_fe_set_b32(&nums_x, nums_b32) ) {
+            secp256k1_ecmult_gen_context_clear(ctx);
+            return 0;
+        }
+        if (!secp256k1_ge_set_xo_var(&nums_ge, &nums_x, 0)) {
+            secp256k1_ecmult_gen_context_clear(ctx);
+            return 0;
+        }
         secp256k1_gej_set_ge(&nums_gej, &nums_ge);
         /* Add G to make the bits in x uniformly distributed. */
         secp256k1_gej_add_ge_var(&nums_gej, &nums_gej, &secp256k1_ge_const_g, NULL);
@@ -87,7 +90,10 @@ static void secp256k1_ecmult_gen_context_build(secp256k1_ecmult_gen_context *ctx
                 secp256k1_gej_add_var(&numsbase, &numsbase, &nums_gej, NULL);
             }
         }
-        secp256k1_ge_set_all_gej_var(prec, precj, 1024);
+        if (!secp256k1_ge_set_all_gej_var(prec, precj, 1024)) {
+            secp256k1_ecmult_gen_context_clear(ctx);
+            return 0;
+        }
     }
     for (j = 0; j < 64; j++) {
         for (i = 0; i < 16; i++) {
@@ -98,7 +104,11 @@ static void secp256k1_ecmult_gen_context_build(secp256k1_ecmult_gen_context *ctx
     (void)prealloc;
     ctx->prec = (secp256k1_ge_storage (*)[64][16])secp256k1_ecmult_static_context;
 #endif
-    secp256k1_ecmult_gen_blind(ctx, NULL);
+    if (!secp256k1_ecmult_gen_blind(ctx, NULL)) {
+        secp256k1_ecmult_gen_context_clear(ctx);
+        return 0;
+    }
+    return 1;
 }
 
 static int secp256k1_ecmult_gen_context_is_built(const secp256k1_ecmult_gen_context* ctx) {
@@ -122,19 +132,25 @@ static void secp256k1_ecmult_gen_context_clear(secp256k1_ecmult_gen_context *ctx
     ctx->prec = NULL;
 }
 
-static void secp256k1_ecmult_gen(const secp256k1_ecmult_gen_context *ctx, secp256k1_gej *r, const secp256k1_scalar *gn) {
+static int secp256k1_ecmult_gen(const secp256k1_ecmult_gen_context *ctx, secp256k1_gej *r, const secp256k1_scalar *gn) {
     secp256k1_ge add;
     secp256k1_ge_storage adds;
     secp256k1_scalar gnb;
     int bits;
     int i, j;
+    int err = 0;
     memset(&adds, 0, sizeof(adds));
     *r = ctx->initial;
     /* Blind scalar/point multiplication by computing (n-b)G + bG instead of nG. */
     secp256k1_scalar_add(&gnb, gn, &ctx->blind);
     add.infinity = 0;
     for (j = 0; j < 64; j++) {
-        bits = secp256k1_scalar_get_bits(&gnb, j * 4, 4);
+        bits = secp256k1_scalar_get_bits(&gnb, j * 4, 4, &err);
+        if (err) {
+            secp256k1_ge_clear(&add);
+            secp256k1_scalar_clear(&gnb);
+            return 0;
+        }
         for (i = 0; i < 16; i++) {
             /** This uses a conditional move to avoid any secret data in array indexes.
              *   _Any_ use of secret indexes has been demonstrated to result in timing
@@ -154,10 +170,11 @@ static void secp256k1_ecmult_gen(const secp256k1_ecmult_gen_context *ctx, secp25
     bits = 0;
     secp256k1_ge_clear(&add);
     secp256k1_scalar_clear(&gnb);
+    return 1;
 }
 
 /* Setup blinding values for secp256k1_ecmult_gen. */
-static void secp256k1_ecmult_gen_blind(secp256k1_ecmult_gen_context *ctx, const unsigned char *seed32) {
+static int secp256k1_ecmult_gen_blind(secp256k1_ecmult_gen_context *ctx, const unsigned char *seed32) {
     secp256k1_scalar b;
     secp256k1_gej gb;
     secp256k1_fe s;
@@ -182,12 +199,14 @@ static void secp256k1_ecmult_gen_blind(secp256k1_ecmult_gen_context *ctx, const 
         memcpy(keydata + 32, seed32, 32);
     }
     secp256k1_rfc6979_hmac_sha256_initialize(&rng, keydata, seed32 ? 64 : 32);
-    memset(keydata, 0, sizeof(keydata));
+    secp256k1_memclear(keydata, sizeof(keydata));
     /* Retry for out of range results to achieve uniformity. */
     do {
         secp256k1_rfc6979_hmac_sha256_generate(&rng, nonce32, 32);
         retry = !secp256k1_fe_set_b32(&s, nonce32);
-        retry |= secp256k1_fe_is_zero(&s);
+        if (!retry) {
+            retry = secp256k1_fe_is_zero(&s);
+        }
     } while (retry); /* This branch true is cryptographically unreachable. Requires sha256_hmac output > Fp. */
     /* Randomize the projection to defend against multiplier sidechannels. */
     secp256k1_gej_rescale(&ctx->initial, &s);
@@ -199,13 +218,18 @@ static void secp256k1_ecmult_gen_blind(secp256k1_ecmult_gen_context *ctx, const 
         retry |= secp256k1_scalar_is_zero(&b);
     } while (retry); /* This branch true is cryptographically unreachable. Requires sha256_hmac output > order. */
     secp256k1_rfc6979_hmac_sha256_finalize(&rng);
-    memset(nonce32, 0, 32);
-    secp256k1_ecmult_gen(ctx, &gb, &b);
+    secp256k1_memclear(nonce32, 32);
+    if (!secp256k1_ecmult_gen(ctx, &gb, &b)) {
+        secp256k1_scalar_clear(&b);
+        secp256k1_gej_clear(&gb);
+        return 0;
+    }
     secp256k1_scalar_negate(&b, &b);
     ctx->blind = b;
     ctx->initial = gb;
     secp256k1_scalar_clear(&b);
     secp256k1_gej_clear(&gb);
+    return 1;
 }
 
 #endif /* SECP256K1_ECMULT_GEN_IMPL_H */

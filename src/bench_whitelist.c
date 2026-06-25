@@ -48,6 +48,8 @@ static void run_test(bench_data* data) {
 
 void random_scalar_order(secp256k1_scalar *num) {
     do {
+        /* Note, the generated private keys are deterministic and predictable across runs */
+        /* It is a benchmark, we don't need security, instead we need repeatability. */
         unsigned char b32[32];
         int overflow = 0;
         secp256k1_rand256(b32);
@@ -65,6 +67,7 @@ int main(void) {
     size_t n_keys = 30;
     secp256k1_scalar ssub;
 
+    /* Skipping randomize because it is a benchmark, no needs for high security */
     data.ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
 
     /* Start with subkey */

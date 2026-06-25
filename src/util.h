@@ -17,7 +17,7 @@
 
 typedef struct {
     void (*fn)(const char *text, void* data);
-    const void* data;
+    void* data;
 } secp256k1_callback;
 
 static SECP256K1_INLINE void secp256k1_callback_call(const secp256k1_callback * const cb, const char * const text) {
@@ -78,10 +78,21 @@ static SECP256K1_INLINE void *checked_malloc(const secp256k1_callback* cb, size_
 
 static SECP256K1_INLINE void *checked_realloc(const secp256k1_callback* cb, void *ptr, size_t size) {
     void *ret = realloc(ptr, size);
-    if (ret == NULL) {
+    if (ret == NULL && size!=0) {
         secp256k1_callback_call(cb, "Out of memory");
     }
     return ret;
+}
+
+/* Point of that method is to use volatile so compiler will not optimize the code */
+/* It is what is normally memset_s is used for. Problem that we target so low C standard */
+/* version so memset_s is not available  */
+ static SECP256K1_INLINE void secp256k1_memclear(void *ptr, size_t len) {
+    volatile unsigned char *p = (volatile unsigned char *)ptr;
+    while (len > 0) {
+        *p++ = 0;
+        len--;
+    }
 }
 
 #if defined(__BIGGEST_ALIGNMENT__)
@@ -143,11 +154,14 @@ SECP256K1_INLINE static int secp256k1_clz64_var(uint64_t x) {
         return 64;
     }
 # if defined(HAVE_BUILTIN_CLZLL)
-    ret = __builtin_clzll(x);
+    /* __builtin_clzll counts leading zeroes in unsigned long long. Adjust for
+     * ABIs where that type is wider than uint64_t. */
+    ret = __builtin_clzll((unsigned long long)x) - (int)(8 * (sizeof(unsigned long long) - sizeof(x)));
 # else
     /*FIXME: debruijn fallback. */
     for (ret = 0; ((x & (1ULL << 63)) == 0); x <<= 1, ret++);
 # endif
+    VERIFY_CHECK(ret >= 0 && ret <= 63);
     return ret;
 }
 

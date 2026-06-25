@@ -102,12 +102,12 @@ SECP256K1_API int secp256k1_aggsig_export_secnonce_single(
  *  Out:     sig64: the completed signature (cannot be NULL)
  *  In:      msg32: the message to sign (cannot be NULL)
  *           seckey32: the secret signing key (cannot be NULL)
- *           secnonce32: secret nonce to use. If NULL, a nonce will be generated
+ *           secnonce32: secret nonce to use. If NULL, a nonce will be generated from the seed
  *           extra32: if non-NULL, add this key to s
  *           pubnonce_for_e: If this is non-NULL, encode this value in e instead of the derived
  *           pubnonce_total: If non-NULL, allow this signature to be included in combined sig
  *               in all cases by negating secnonce32 if the public nonce total has jacobi symbol 
- *               -1. secnonce32 must also be provided
+ *               -1. secnonce32 must also be provided (if secnonce32 id NULL, pubnonce_total will not be used)
  *           pubkey_for_e: If this is non-NULL, encode this value in e
  *           seed: a 32-byte seed to use for the nonce-generating RNG (cannot be NULL)
  */

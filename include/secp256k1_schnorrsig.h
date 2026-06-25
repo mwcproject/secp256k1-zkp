@@ -72,7 +72,10 @@ SECP256K1_API int secp256k1_schnorrsig_parse(
  *  In:    msg32: the 32-byte message hash being signed (cannot be NULL)
  *        seckey: pointer to a 32-byte secret key (cannot be NULL)
  *       noncefp: pointer to a nonce generation function. If NULL, secp256k1_nonce_function_bipschnorr is used
- *         ndata: pointer to arbitrary data used by the nonce generation function (can be NULL)
+ *         ndata: pointer to arbitrary data used by the nonce generation function (can be NULL).
+ *                When the default secp256k1_nonce_function_bipschnorr is used,
+ *                this must either be NULL or point to 32 bytes of auxiliary
+ *                data to be mixed into nonce derivation.
  */
 SECP256K1_API int secp256k1_schnorrsig_sign(
 	const secp256k1_context* ctx,

@@ -14,6 +14,7 @@
 
 static double gettimedouble(void) {
     struct timeval tv;
+    /* The return value of gettimeofday ignored intentionally */
     gettimeofday(&tv, NULL);
     return tv.tv_usec * 0.000001 + tv.tv_sec;
 }

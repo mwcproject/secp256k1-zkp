@@ -15,6 +15,9 @@ static int secp256k1_whitelist_hash_pubkey(secp256k1_scalar* output, secp256k1_g
     size_t size = 33;
     secp256k1_ge ge;
 
+    if (secp256k1_gej_is_infinity(pubkey)) {
+        return 0;
+    }
     secp256k1_ge_set_gej(&ge, pubkey);
 
     secp256k1_sha256_initialize(&sha);
@@ -42,7 +45,7 @@ static int secp256k1_whitelist_tweak_pubkey(const secp256k1_context* ctx, secp25
 
     ret = secp256k1_whitelist_hash_pubkey(&tweak, pub_tweaked);
     if (ret) {
-        secp256k1_ecmult(&ctx->ecmult_ctx, pub_tweaked, pub_tweaked, &tweak, &zero);
+        ret = secp256k1_ecmult(&ctx->ecmult_ctx, pub_tweaked, pub_tweaked, &tweak, &zero);
     }
     return ret;
 }
@@ -58,8 +61,10 @@ static int secp256k1_whitelist_compute_tweaked_privkey(const secp256k1_context* 
     }
     if (ret) {
         secp256k1_gej pkeyj;
-        secp256k1_ecmult_gen(&ctx->ecmult_gen_ctx, &pkeyj, skey);
-        ret = secp256k1_whitelist_hash_pubkey(&tweak, &pkeyj);
+        ret = secp256k1_ecmult_gen(&ctx->ecmult_gen_ctx, &pkeyj, skey);
+        if (ret) {
+            ret = secp256k1_whitelist_hash_pubkey(&tweak, &pkeyj);
+        }
     }
     if (ret) {
         secp256k1_scalar sonline;
@@ -70,6 +75,9 @@ static int secp256k1_whitelist_compute_tweaked_privkey(const secp256k1_context* 
             ret = 0;
         }
         secp256k1_scalar_add(skey, skey, &sonline);
+        if (secp256k1_scalar_is_zero(skey)) {
+            ret = 0;
+        }
         secp256k1_scalar_clear(&sonline);
         secp256k1_scalar_clear(&tweak);
     }
@@ -91,7 +99,8 @@ static int secp256k1_whitelist_compute_keys_and_message(const secp256k1_context*
     secp256k1_ge subkey_ge;
 
     secp256k1_sha256_initialize(&sha);
-    secp256k1_pubkey_load(ctx, &subkey_ge, sub_pubkey);
+    if (!secp256k1_pubkey_load(ctx, &subkey_ge, sub_pubkey))
+        return 0;
 
     /* commit to sub-key */
     if (!secp256k1_eckey_pubkey_serialize(&subkey_ge, c, &size, SECP256K1_EC_COMPRESSED)) {
@@ -104,12 +113,14 @@ static int secp256k1_whitelist_compute_keys_and_message(const secp256k1_context*
         secp256k1_gej tweaked_gej;
 
         /* commit to fixed keys */
-        secp256k1_pubkey_load(ctx, &offline_ge, &offline_pubkeys[i]);
+        if (!secp256k1_pubkey_load(ctx, &offline_ge, &offline_pubkeys[i]))
+            return 0;
         if (!secp256k1_eckey_pubkey_serialize(&offline_ge, c, &size, SECP256K1_EC_COMPRESSED)) {
             return 0;
         }
         secp256k1_sha256_write(&sha, c, size);
-        secp256k1_pubkey_load(ctx, &online_ge, &online_pubkeys[i]);
+        if (!secp256k1_pubkey_load(ctx, &online_ge, &online_pubkeys[i]))
+            return 0;
         if (!secp256k1_eckey_pubkey_serialize(&online_ge, c, &size, SECP256K1_EC_COMPRESSED)) {
             return 0;
         }
@@ -118,8 +129,16 @@ static int secp256k1_whitelist_compute_keys_and_message(const secp256k1_context*
         /* compute tweaked keys */
         secp256k1_gej_set_ge(&tweaked_gej, &offline_ge);
         secp256k1_gej_add_ge_var(&tweaked_gej, &tweaked_gej, &subkey_ge, NULL);
-        secp256k1_whitelist_tweak_pubkey(ctx, &tweaked_gej);
+        if (secp256k1_gej_is_infinity(&tweaked_gej)) {
+            return 0;
+        }
+        if (!secp256k1_whitelist_tweak_pubkey(ctx, &tweaked_gej)) {
+            return 0;
+        }
         secp256k1_gej_add_ge_var(&keys[i], &tweaked_gej, &online_ge, NULL);
+        if (secp256k1_gej_is_infinity(&keys[i])) {
+            return 0;
+        }
     }
     secp256k1_sha256_finalize(&sha, msg32);
     return 1;

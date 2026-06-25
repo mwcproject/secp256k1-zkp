@@ -42,7 +42,7 @@ SECP256K1_API int secp256k1_ecdsa_recoverable_signature_parse_compact(
 
 /** Convert a recoverable signature into a normal signature.
  *
- *  Returns: 1
+ *  Returns: 1 if the signature object is well-formed, 0 otherwise
  *  Out: sig:    a pointer to a normal signature (cannot be NULL).
  *  In:  sigin:  a pointer to a recoverable signature (cannot be NULL).
  */
@@ -54,7 +54,7 @@ SECP256K1_API int secp256k1_ecdsa_recoverable_signature_convert(
 
 /** Serialize an ECDSA signature in compact format (64 bytes + recovery id).
  *
- *  Returns: 1
+ *  Returns: 1 if the signature object is well-formed, 0 otherwise
  *  Args: ctx:      a secp256k1 context object
  *  Out:  output64: a pointer to a 64-byte array of the compact signature (cannot be NULL)
  *        recid:    a pointer to an integer to hold the recovery id (can be NULL).

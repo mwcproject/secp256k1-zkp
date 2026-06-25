@@ -30,14 +30,15 @@ typedef struct {
 
 static const size_t SECP256K1_ECMULT_GEN_CONTEXT_PREALLOCATED_SIZE;
 static void secp256k1_ecmult_gen_context_init(secp256k1_ecmult_gen_context* ctx);
-static void secp256k1_ecmult_gen_context_build(secp256k1_ecmult_gen_context* ctx, void **prealloc);
+static int secp256k1_ecmult_gen_context_build(secp256k1_ecmult_gen_context* ctx, void **prealloc);
 static void secp256k1_ecmult_gen_context_finalize_memcpy(secp256k1_ecmult_gen_context *dst, const secp256k1_ecmult_gen_context* src);
 static void secp256k1_ecmult_gen_context_clear(secp256k1_ecmult_gen_context* ctx);
 static int secp256k1_ecmult_gen_context_is_built(const secp256k1_ecmult_gen_context* ctx);
 
-/** Multiply with the generator: R = a*G */
-static void secp256k1_ecmult_gen(const secp256k1_ecmult_gen_context* ctx, secp256k1_gej *r, const secp256k1_scalar *a);
-
-static void secp256k1_ecmult_gen_blind(secp256k1_ecmult_gen_context *ctx, const unsigned char *seed32);
+/** Multiply with the generator: R = a*G
+ * Return 1 on success, 0 on error   */
+static int secp256k1_ecmult_gen(const secp256k1_ecmult_gen_context* ctx, secp256k1_gej *r, const secp256k1_scalar *a);
+/* Return 1 on success, 0 on error   */
+static int secp256k1_ecmult_gen_blind(secp256k1_ecmult_gen_context *ctx, const unsigned char *seed32);
 
 #endif /* SECP256K1_ECMULT_GEN_H */

@@ -32,6 +32,7 @@ SECP256K1_INLINE static void secp256k1_borromean_hash(unsigned char *hash, const
     uint32_t epos;
     secp256k1_sha256 sha256_en;
     secp256k1_sha256_initialize(&sha256_en);
+    /* Assume that uint32_t is large enough to handle size_t values  */
     ring = BE32((uint32_t)ridx);
     epos = BE32((uint32_t)eidx);
     secp256k1_sha256_write(&sha256_en, e, elen);
@@ -72,11 +73,19 @@ int secp256k1_borromean_verify(const secp256k1_ecmult_context* ecmult_ctx, secp2
     VERIFY_CHECK(s != NULL);
     VERIFY_CHECK(pubs != NULL);
     VERIFY_CHECK(rsizes != NULL);
-    VERIFY_CHECK(nrings > 0);
     VERIFY_CHECK(m != NULL);
     count = 0;
+
+    if (nrings==0) {
+        return 0;
+    }
+
     secp256k1_sha256_initialize(&sha256_e0);
     for (i = 0; i < nrings; i++) {
+        if (rsizes[i]==0) {
+            return 0;
+        }
+
         VERIFY_CHECK(INT_MAX - count > rsizes[i]);
         secp256k1_borromean_hash(tmp, m, mlen, e0, 32, i, 0);
         secp256k1_scalar_set_b32(&ens, tmp, &overflow);
@@ -88,13 +97,17 @@ int secp256k1_borromean_verify(const secp256k1_ecmult_context* ecmult_ctx, secp2
                 /*If requested, save the challenges for proof rewind.*/
                 evalues[count] = ens;
             }
-            secp256k1_ecmult(ecmult_ctx, &rgej, &pubs[count], &ens, &s[count]);
+            if (!secp256k1_ecmult(ecmult_ctx, &rgej, &pubs[count], &ens, &s[count]))
+                return 0;
             if (secp256k1_gej_is_infinity(&rgej)) {
                 return 0;
             }
             /* OPT: loop can be hoisted and split to use batch inversion across all the rings; this would make it much faster. */
-            secp256k1_ge_set_gej_var(&rge, &rgej);
-            secp256k1_eckey_pubkey_serialize(&rge, tmp, &size, 1);
+            if (!secp256k1_ge_set_gej_var(&rge, &rgej))
+                return 0;
+            if (!secp256k1_eckey_pubkey_serialize(&rge, tmp, &size, 1)) {
+                return 0;
+            }
             if (j != rsizes[i] - 1) {
                 secp256k1_borromean_hash(tmp, m, mlen, tmp, 33, i, j + 1);
                 secp256k1_scalar_set_b32(&ens, tmp, &overflow);
@@ -131,34 +144,48 @@ int secp256k1_borromean_sign(const secp256k1_ecmult_context* ecmult_ctx, const s
     VERIFY_CHECK(sec != NULL);
     VERIFY_CHECK(rsizes != NULL);
     VERIFY_CHECK(secidx != NULL);
-    VERIFY_CHECK(nrings > 0);
     VERIFY_CHECK(m != NULL);
+
+    if (nrings == 0) {
+        return 0;
+    }
+
     secp256k1_sha256_initialize(&sha256_e0);
     count = 0;
     for (i = 0; i < nrings; i++) {
-        VERIFY_CHECK(INT_MAX - count > rsizes[i]);
-        secp256k1_ecmult_gen(ecmult_gen_ctx, &rgej, &k[i]);
-        secp256k1_ge_set_gej(&rge, &rgej);
-        if (secp256k1_gej_is_infinity(&rgej)) {
+        if (INT_MAX - count <= rsizes[i])
             return 0;
-        }
-        secp256k1_eckey_pubkey_serialize(&rge, tmp, &size, 1);
+        if (rsizes[i] == 0 || secidx[i] >= rsizes[i])
+            return 0;
+        if (!secp256k1_ecmult_gen(ecmult_gen_ctx, &rgej, &k[i]))
+            return 0;
+        if (secp256k1_gej_is_infinity(&rgej))
+            return 0;
+        secp256k1_ge_set_gej(&rge, &rgej);
+        if (!secp256k1_eckey_pubkey_serialize(&rge, tmp, &size, 1))
+            return 0;
         for (j = secidx[i] + 1; j < rsizes[i]; j++) {
             secp256k1_borromean_hash(tmp, m, mlen, tmp, 33, i, j);
             secp256k1_scalar_set_b32(&ens, tmp, &overflow);
             if (overflow || secp256k1_scalar_is_zero(&ens)) {
                 return 0;
             }
+            if (secp256k1_scalar_is_zero(&s[count + j])) {
+                return 0;
+            }
             /** The signing algorithm as a whole is not memory uniform so there is likely a cache sidechannel that
              *  leaks which members are non-forgeries. That the forgeries themselves are variable time may leave
              *  an additional privacy impacting timing side-channel, but not a key loss one.
              */
-            secp256k1_ecmult(ecmult_ctx, &rgej, &pubs[count + j], &ens, &s[count + j]);
+            if (!secp256k1_ecmult(ecmult_ctx, &rgej, &pubs[count + j], &ens, &s[count + j]))
+                return 0;
             if (secp256k1_gej_is_infinity(&rgej)) {
                 return 0;
             }
-            secp256k1_ge_set_gej_var(&rge, &rgej);
-            secp256k1_eckey_pubkey_serialize(&rge, tmp, &size, 1);
+            if (!secp256k1_ge_set_gej_var(&rge, &rgej))
+                return 0;
+            if (!secp256k1_eckey_pubkey_serialize(&rge, tmp, &size, 1))
+                return 0;
         }
         secp256k1_sha256_write(&sha256_e0, tmp, size);
         count += rsizes[i];
@@ -167,19 +194,27 @@ int secp256k1_borromean_sign(const secp256k1_ecmult_context* ecmult_ctx, const s
     secp256k1_sha256_finalize(&sha256_e0, e0);
     count = 0;
     for (i = 0; i < nrings; i++) {
-        VERIFY_CHECK(INT_MAX - count > rsizes[i]);
+        if (INT_MAX - count <= rsizes[i]) {
+            return 0;
+        }
         secp256k1_borromean_hash(tmp, m, mlen, e0, 32, i, 0);
         secp256k1_scalar_set_b32(&ens, tmp, &overflow);
         if (overflow || secp256k1_scalar_is_zero(&ens)) {
             return 0;
         }
         for (j = 0; j < secidx[i]; j++) {
-            secp256k1_ecmult(ecmult_ctx, &rgej, &pubs[count + j], &ens, &s[count + j]);
+            if (secp256k1_scalar_is_zero(&s[count + j])) {
+                return 0;
+            }
+            if (!secp256k1_ecmult(ecmult_ctx, &rgej, &pubs[count + j], &ens, &s[count + j]))
+                return 0;
             if (secp256k1_gej_is_infinity(&rgej)) {
                 return 0;
             }
-            secp256k1_ge_set_gej_var(&rge, &rgej);
-            secp256k1_eckey_pubkey_serialize(&rge, tmp, &size, 1);
+            if (!secp256k1_ge_set_gej_var(&rge, &rgej))
+                return 0;
+            if (!secp256k1_eckey_pubkey_serialize(&rge, tmp, &size, 1))
+                return 0;
             secp256k1_borromean_hash(tmp, m, mlen, tmp, 33, i, j + 1);
             secp256k1_scalar_set_b32(&ens, tmp, &overflow);
             if (overflow || secp256k1_scalar_is_zero(&ens)) {

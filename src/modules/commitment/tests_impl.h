@@ -338,6 +338,7 @@ void test_switch(void) {
 void run_commitment_tests(void) {
     int i;
     test_commitment_api();
+    /* No need to validate range of count, it is a test */
     for (i = 0; i < 10*count; i++) {
         test_pedersen();
     }

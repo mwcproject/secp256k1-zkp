@@ -35,6 +35,7 @@ void test_aggsig_api(void) {
     unsigned char orig_sig;
     unsigned char orig_msg;
     unsigned char *msg = seed;  /* shh ;) */
+    unsigned char msg2[32];
     const secp256k1_pubkey* pubkey_combiner[2];
     secp256k1_pubkey combiner_sum;
     secp256k1_pubkey combiner_sum_2;
@@ -79,8 +80,9 @@ void test_aggsig_api(void) {
     secp256k1_aggsig_context_destroy(aggctx);
 
     aggctx = secp256k1_aggsig_context_create(none, pubkeys, 0, seed);
-    CHECK(ecount == 0);
-    CHECK(aggctx != NULL);
+    CHECK(ecount == 1);
+    CHECK(aggctx == NULL);
+    ecount = 0;
     secp256k1_aggsig_context_destroy(aggctx);
 
     aggctx = secp256k1_aggsig_context_create(none, pubkeys, 0, NULL);
@@ -172,6 +174,12 @@ void test_aggsig_api(void) {
     CHECK(secp256k1_aggsig_verify_single(vrfy, sig, msg, NULL, &pubkeys[0], NULL, NULL, 0));
     CHECK(!secp256k1_aggsig_verify_single(vrfy, sig, msg, NULL, &pubkeys[1], NULL, NULL, 0));
     CHECK(!secp256k1_aggsig_verify_single(vrfy, sig, msg, NULL, &pubkeys[0], &pubkeys[1], NULL, 0));
+    memcpy(msg2, msg, 32);
+    msg2[0] ^= 1;
+    /* Note, signature for the same seed will be the same. Nonce will be the same as well. */
+    CHECK(secp256k1_aggsig_sign_single(sign, sig2, msg2, seckeys[0], NULL, NULL, NULL, NULL, NULL, seed));
+    CHECK(memcmp(sig, sig2, 32) == 0);
+    CHECK(secp256k1_aggsig_verify_single(vrfy, sig2, msg2, NULL, &pubkeys[0], NULL, NULL, 0));
     orig_sig=sig[0];
     sig[0]=99;
     CHECK(!secp256k1_aggsig_verify_single(vrfy, sig, msg, NULL, &pubkeys[0], NULL, NULL, 0));

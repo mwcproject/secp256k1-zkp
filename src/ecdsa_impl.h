@@ -211,11 +211,13 @@ static int secp256k1_ecdsa_sig_verify(const secp256k1_ecmult_context *ctx, const
         return 0;
     }
 
-    secp256k1_scalar_inverse_var(&sn, sigs);
+    if (!secp256k1_scalar_inverse_var(&sn, sigs))
+        return 0;
     secp256k1_scalar_mul(&u1, &sn, message);
     secp256k1_scalar_mul(&u2, &sn, sigr);
     secp256k1_gej_set_ge(&pubkeyj, pubkey);
-    secp256k1_ecmult(ctx, &pr, &pubkeyj, &u2, &u1);
+    if (!secp256k1_ecmult(ctx, &pr, &pubkeyj, &u2, &u1))
+        return 0;
     if (secp256k1_gej_is_infinity(&pr)) {
         return 0;
     }
@@ -233,7 +235,9 @@ static int secp256k1_ecdsa_sig_verify(const secp256k1_ecmult_context *ctx, const
 }
 #else
     secp256k1_scalar_get_b32(c, sigr);
-    secp256k1_fe_set_b32(&xr, c);
+    if (!secp256k1_fe_set_b32(&xr, c)) {
+        return 0;
+    }
 
     /** We now have the recomputed R point in pr, and its claimed x coordinate (modulo n)
      *  in xr. Naively, we would extract the x coordinate from pr (requiring a inversion modulo p),
@@ -275,7 +279,8 @@ static int secp256k1_ecdsa_sig_sign(const secp256k1_ecmult_gen_context *ctx, sec
     secp256k1_scalar n;
     int overflow = 0;
 
-    secp256k1_ecmult_gen(ctx, &rp, nonce);
+    if (!secp256k1_ecmult_gen(ctx, &rp, nonce))
+        return 0;
     secp256k1_ge_set_gej(&r, &rp);
     secp256k1_fe_normalize(&r.x);
     secp256k1_fe_normalize(&r.y);

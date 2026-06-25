@@ -27,16 +27,16 @@
 static void secp256k1_scalar_clear(secp256k1_scalar *r);
 
 /** Access bits from a scalar. All requested bits must belong to the same 32-bit limb. */
-static unsigned int secp256k1_scalar_get_bits(const secp256k1_scalar *a, unsigned int offset, unsigned int count);
+static unsigned int secp256k1_scalar_get_bits(const secp256k1_scalar *a, unsigned int offset, unsigned int count, int * err);
 
 /** Access bits from a scalar. Not constant time. */
-static unsigned int secp256k1_scalar_get_bits_var(const secp256k1_scalar *a, unsigned int offset, unsigned int count);
+static unsigned int secp256k1_scalar_get_bits_var(const secp256k1_scalar *a, unsigned int offset, unsigned int count, int * err);
 
 /** Set a scalar from a big endian byte array. */
 static void secp256k1_scalar_set_b32(secp256k1_scalar *r, const unsigned char *bin, int *overflow);
 
 /** Set a scalar to an unsigned integer. */
-static void secp256k1_scalar_set_int(secp256k1_scalar *r, unsigned int v);
+static void secp256k1_scalar_set_int(secp256k1_scalar *r, uint32_t v);
 
 /** Set a scalar to an unsigned 64-bit integer */
 static void secp256k1_scalar_set_u64(secp256k1_scalar *r, uint64_t v);
@@ -55,7 +55,7 @@ static void secp256k1_scalar_mul(secp256k1_scalar *r, const secp256k1_scalar *a,
 
 /** Shift a scalar right by some amount strictly between 0 and 16, returning
  *  the low bits that were shifted off */
-static int secp256k1_scalar_shr_int(secp256k1_scalar *r, int n);
+static int secp256k1_scalar_shr_int(secp256k1_scalar *r, int n, int * err);
 
 /** Compute the square of a scalar (modulo the group order). */
 static void secp256k1_scalar_sqr(secp256k1_scalar *r, const secp256k1_scalar *a);
@@ -63,8 +63,9 @@ static void secp256k1_scalar_sqr(secp256k1_scalar *r, const secp256k1_scalar *a)
 /** Compute the inverse of a scalar (modulo the group order). */
 static void secp256k1_scalar_inverse(secp256k1_scalar *r, const secp256k1_scalar *a);
 
-/** Compute the inverse of a scalar (modulo the group order), without constant-time guarantee. */
-static void secp256k1_scalar_inverse_var(secp256k1_scalar *r, const secp256k1_scalar *a);
+/** Compute the inverse of a scalar (modulo the group order), without constant-time guarantee.
+ * Return 1 on success, 0 on failure   */
+static int secp256k1_scalar_inverse_var(secp256k1_scalar *r, const secp256k1_scalar *a);
 
 /** Compute the complement of a scalar (modulo the group order). */
 static void secp256k1_scalar_negate(secp256k1_scalar *r, const secp256k1_scalar *a);
@@ -86,11 +87,13 @@ static int secp256k1_scalar_is_high(const secp256k1_scalar *a);
 static int secp256k1_scalar_cond_negate(secp256k1_scalar *a, int flag);
 
 #ifndef USE_NUM_NONE
-/** Convert a scalar to a number. */
-static void secp256k1_scalar_get_num(secp256k1_num *r, const secp256k1_scalar *a);
+/** Convert a scalar to a number.
+ * Return 1 on success, 0 on failure  */
+static int secp256k1_scalar_get_num(secp256k1_num *r, const secp256k1_scalar *a);
 
-/** Get the order of the group as a number. */
-static void secp256k1_scalar_order_get_num(secp256k1_num *r);
+/** Get the order of the group as a number.
+ * Return 1 on success, 0 on failure  */
+static int secp256k1_scalar_order_get_num(secp256k1_num *r);
 #endif
 
 /** Compare two scalars. */
@@ -100,11 +103,14 @@ static int secp256k1_scalar_eq(const secp256k1_scalar *a, const secp256k1_scalar
 /** Find r1 and r2 such that r1+r2*2^128 = a. */
 static void secp256k1_scalar_split_128(secp256k1_scalar *r1, secp256k1_scalar *r2, const secp256k1_scalar *a);
 /** Find r1 and r2 such that r1+r2*lambda = a, and r1 and r2 are maximum 128 bits long (see secp256k1_gej_mul_lambda). */
-static void secp256k1_scalar_split_lambda(secp256k1_scalar *r1, secp256k1_scalar *r2, const secp256k1_scalar *a);
+/* Return 1 on success, 0 on failure */
+static int secp256k1_scalar_split_lambda(secp256k1_scalar *r1, secp256k1_scalar *r2, const secp256k1_scalar *a);
 #endif
 
-/** Multiply a and b (without taking the modulus!), divide by 2**shift, and round to the nearest integer. Shift must be at least 256. */
-static void secp256k1_scalar_mul_shift_var(secp256k1_scalar *r, const secp256k1_scalar *a, const secp256k1_scalar *b, unsigned int shift);
+/** Multiply a and b (without taking the modulus!), divide by 2**shift, and round to the nearest integer. Shift must
+ * be between 256 and 512 inclusive. */
+/* Return 1 on success, 0 on failure */
+static int secp256k1_scalar_mul_shift_var(secp256k1_scalar *r, const secp256k1_scalar *a, const secp256k1_scalar *b, unsigned int shift);
 
 /** Generate two scalars from a 32-byte seed and an integer using the chacha20 stream cipher */
 static void secp256k1_scalar_chacha20(secp256k1_scalar *r1, secp256k1_scalar *r2, const unsigned char *seed, uint64_t idx);

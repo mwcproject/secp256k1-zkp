@@ -7,6 +7,7 @@
 #ifndef SECP256K1_ECMULT_IMPL_H
 #define SECP256K1_ECMULT_IMPL_H
 
+#include <limits.h>
 #include <string.h>
 #include <stdint.h>
 
@@ -138,7 +139,7 @@ static void secp256k1_ecmult_odd_multiples_table_globalz_windowa(secp256k1_ge *p
     secp256k1_ge_globalz_set_table_gej(ECMULT_TABLE_SIZE(WINDOW_A), pre, globalz, prej, zr);
 }
 
-static void secp256k1_ecmult_odd_multiples_table_storage_var(const int n, secp256k1_ge_storage *pre, const secp256k1_gej *a) {
+static int secp256k1_ecmult_odd_multiples_table_storage_var(const int n, secp256k1_ge_storage *pre, const secp256k1_gej *a) {
     secp256k1_gej d;
     secp256k1_ge a_ge, d_ge, p_ge;
     secp256k1_ge last_ge;
@@ -188,13 +189,15 @@ static void secp256k1_ecmult_odd_multiples_table_storage_var(const int n, secp25
     /* Directly set `pre[n - 1]` to `pj`, saving the inverted z-coordinate so
      * that we can combine it with the saved z-ratios to compute the other zs
      * without any more inversions. */
-    secp256k1_fe_inv_var(&zi, &pj.z);
+    if (!secp256k1_fe_inv_var(&zi, &pj.z))
+        return 0;
     secp256k1_ge_set_gej_zinv(&p_ge, &pj, &zi);
     secp256k1_ge_from_storage(&last_ge, &pre[n - 1]);
     secp256k1_ge_to_storage(&pre[n - 1], &p_ge);
 
     /* Compute the actual x-coordinate of D, which will be needed below. */
-    secp256k1_fe_inv_var(&d.z, &d.z);
+    if (!secp256k1_fe_inv_var(&d.z, &d.z))
+        return 0;
     secp256k1_fe_sqr(&dx_over_dz_squared, &d.z);
     secp256k1_fe_mul(&dx_over_dz_squared, &dx_over_dz_squared, &d.x);
 
@@ -239,6 +242,7 @@ static void secp256k1_ecmult_odd_multiples_table_storage_var(const int n, secp25
         /* Store */
         secp256k1_ge_to_storage(&pre[i], &p_ge);
     }
+    return 1;
 }
 
 
@@ -282,13 +286,13 @@ static void secp256k1_ecmult_context_init(secp256k1_ecmult_context *ctx) {
 #endif
 }
 
-static void secp256k1_ecmult_context_build(secp256k1_ecmult_context *ctx, void **prealloc) {
+static int secp256k1_ecmult_context_build(secp256k1_ecmult_context *ctx, void **prealloc) {
     secp256k1_gej gj;
     void* const base = *prealloc;
     size_t const prealloc_size = SECP256K1_ECMULT_CONTEXT_PREALLOCATED_SIZE;
 
     if (ctx->pre_g != NULL) {
-        return;
+        return 1;
     }
 
     /* get the generator */
@@ -297,7 +301,10 @@ static void secp256k1_ecmult_context_build(secp256k1_ecmult_context *ctx, void *
     ctx->pre_g = (secp256k1_ge_storage (*)[])manual_alloc(prealloc, sizeof((*ctx->pre_g)[0]) * ECMULT_TABLE_SIZE(WINDOW_G), base, prealloc_size);
 
     /* precompute the tables with odd multiples */
-    secp256k1_ecmult_odd_multiples_table_storage_var(ECMULT_TABLE_SIZE(WINDOW_G), *ctx->pre_g, &gj);
+    if (!secp256k1_ecmult_odd_multiples_table_storage_var(ECMULT_TABLE_SIZE(WINDOW_G), *ctx->pre_g, &gj)) {
+        secp256k1_ecmult_context_clear(ctx);
+        return 0;
+    }
 
 #ifdef USE_ENDOMORPHISM
     {
@@ -311,9 +318,13 @@ static void secp256k1_ecmult_context_build(secp256k1_ecmult_context *ctx, void *
         for (i = 0; i < 128; i++) {
             secp256k1_gej_double_var(&g_128j, &g_128j, NULL);
         }
-        secp256k1_ecmult_odd_multiples_table_storage_var(ECMULT_TABLE_SIZE(WINDOW_G), *ctx->pre_g_128, &g_128j);
+        if (!secp256k1_ecmult_odd_multiples_table_storage_var(ECMULT_TABLE_SIZE(WINDOW_G), *ctx->pre_g_128, &g_128j)) {
+            secp256k1_ecmult_context_clear(ctx);
+            return 0;
+        }
     }
 #endif
+    return 1;
 }
 
 static void secp256k1_ecmult_context_finalize_memcpy(secp256k1_ecmult_context *dst, const secp256k1_ecmult_context *src) {
@@ -344,29 +355,41 @@ static void secp256k1_ecmult_context_clear(secp256k1_ecmult_context *ctx) {
  *  - the number of set values in wnaf is returned. This number is at most 256, and at most one more
  *    than the number of bits in the (absolute value) of the input.
  */
-static int secp256k1_ecmult_wnaf(int *wnaf, int len, const secp256k1_scalar *a, int w) {
-    secp256k1_scalar s = *a;
+static int secp256k1_ecmult_wnaf(int *wnaf, int len, const secp256k1_scalar *a, int w, int * err) {
+    secp256k1_scalar s;
     int last_set_bit = -1;
     int bit = 0;
     int sign = 1;
-    int carry = 0;
+    unsigned int carry = 0;
+    unsigned int res;
 
-    VERIFY_CHECK(wnaf != NULL);
-    VERIFY_CHECK(0 <= len && len <= 256);
-    VERIFY_CHECK(a != NULL);
-    VERIFY_CHECK(2 <= w && w <= 31);
+    if (*err)
+        return 0;
+
+    if (! (wnaf != NULL && (0 <= len && len <= 256) && a != NULL && (2 <= w && w <= 31))) {
+        *err = 1;
+        return 0;
+    }
+
+    s = *a;
 
     memset(wnaf, 0, len * sizeof(wnaf[0]));
-
-    if (secp256k1_scalar_get_bits(&s, 255, 1)) {
+    res = secp256k1_scalar_get_bits(&s, 255, 1, err);
+    if (*err)
+        return 0;
+    if (res) {
         secp256k1_scalar_negate(&s, &s);
         sign = -1;
     }
 
     while (bit < len) {
         int now;
-        int word;
-        if (secp256k1_scalar_get_bits(&s, bit, 1) == (unsigned int)carry) {
+        unsigned int word;
+        int64_t word_signed;
+        res = secp256k1_scalar_get_bits(&s, bit, 1, err);
+        if (*err)
+            return 0;
+        if (res == carry) {
             bit++;
             continue;
         }
@@ -376,20 +399,27 @@ static int secp256k1_ecmult_wnaf(int *wnaf, int len, const secp256k1_scalar *a, 
             now = len - bit;
         }
 
-        word = secp256k1_scalar_get_bits_var(&s, bit, now) + carry;
+        word = secp256k1_scalar_get_bits_var(&s, bit, now, err) + carry;
+        if (*err)
+            return 0;
 
-        carry = (word >> (w-1)) & 1;
-        word -= carry << w;
+        carry = (word >> (w - 1)) & 1U;
+        word_signed = (int64_t)word - ((int64_t)carry << w);
+        VERIFY_CHECK(word_signed >= INT_MIN);
+        VERIFY_CHECK(word_signed <= INT_MAX);
 
-        wnaf[bit] = sign * word;
+        wnaf[bit] = sign * (int)word_signed;
         last_set_bit = bit;
 
         bit += now;
     }
 #ifdef VERIFY
-    CHECK(carry == 0);
+    if (carry != 0)
+        return 0;
     while (bit < 256) {
-        CHECK(secp256k1_scalar_get_bits(&s, bit++, 1) == 0);
+        res = secp256k1_scalar_get_bits(&s, bit++, 1, err);
+        if (*err || res != 0)
+            return 0;
     } 
 #endif
     return last_set_bit + 1;
@@ -419,7 +449,12 @@ struct secp256k1_strauss_state {
     struct secp256k1_strauss_point_state* ps;
 };
 
-static void secp256k1_ecmult_strauss_wnaf(const secp256k1_ecmult_context *ctx, const struct secp256k1_strauss_state *state, secp256k1_gej *r, int num, const secp256k1_gej *a, const secp256k1_scalar *na, const secp256k1_scalar *ng) {
+/* Note: control-flow and memory-access patterns are observable side channels, function currently processed by a
+ * non-constant-time multiplier. This behavior is accepted
+ * Return 1 on success and 0 on falure */
+static int secp256k1_ecmult_strauss_wnaf(const secp256k1_ecmult_context *ctx, const struct secp256k1_strauss_state *state,
+    secp256k1_gej *r, int num, const secp256k1_gej *a, const secp256k1_scalar *na, const secp256k1_scalar *ng)
+{
     secp256k1_ge tmpa;
     secp256k1_fe Z;
 #ifdef USE_ENDOMORPHISM
@@ -437,6 +472,7 @@ static void secp256k1_ecmult_strauss_wnaf(const secp256k1_ecmult_context *ctx, c
     int bits = 0;
     int np;
     int no = 0;
+    int err = 0;
 
     for (np = 0; np < num; ++np) {
         if (secp256k1_scalar_is_zero(&na[np]) || secp256k1_gej_is_infinity(&a[np])) {
@@ -445,11 +481,14 @@ static void secp256k1_ecmult_strauss_wnaf(const secp256k1_ecmult_context *ctx, c
         state->ps[no].input_pos = np;
 #ifdef USE_ENDOMORPHISM
         /* split na into na_1 and na_lam (where na = na_1 + na_lam*lambda, and na_1 and na_lam are ~128 bit) */
-        secp256k1_scalar_split_lambda(&state->ps[no].na_1, &state->ps[no].na_lam, &na[np]);
+        if (!secp256k1_scalar_split_lambda(&state->ps[no].na_1, &state->ps[no].na_lam, &na[np]))
+            return 0;
 
         /* build wnaf representation for na_1 and na_lam. */
-        state->ps[no].bits_na_1   = secp256k1_ecmult_wnaf(state->ps[no].wnaf_na_1,   130, &state->ps[no].na_1,   WINDOW_A);
-        state->ps[no].bits_na_lam = secp256k1_ecmult_wnaf(state->ps[no].wnaf_na_lam, 130, &state->ps[no].na_lam, WINDOW_A);
+        state->ps[no].bits_na_1   = secp256k1_ecmult_wnaf(state->ps[no].wnaf_na_1,   130, &state->ps[no].na_1,   WINDOW_A, &err);
+        state->ps[no].bits_na_lam = secp256k1_ecmult_wnaf(state->ps[no].wnaf_na_lam, 130, &state->ps[no].na_lam, WINDOW_A, &err);
+        if (err)
+            return 0;
         VERIFY_CHECK(state->ps[no].bits_na_1 <= 130);
         VERIFY_CHECK(state->ps[no].bits_na_lam <= 130);
         if (state->ps[no].bits_na_1 > bits) {
@@ -460,7 +499,9 @@ static void secp256k1_ecmult_strauss_wnaf(const secp256k1_ecmult_context *ctx, c
         }
 #else
         /* build wnaf representation for na. */
-        state->ps[no].bits_na     = secp256k1_ecmult_wnaf(state->ps[no].wnaf_na,     256, &na[np],      WINDOW_A);
+        state->ps[no].bits_na     = secp256k1_ecmult_wnaf(state->ps[no].wnaf_na,     256, &na[np],      WINDOW_A, &err);
+        if (err)
+            return 0;
         if (state->ps[no].bits_na > bits) {
             bits = state->ps[no].bits_na;
         }
@@ -508,8 +549,11 @@ static void secp256k1_ecmult_strauss_wnaf(const secp256k1_ecmult_context *ctx, c
         secp256k1_scalar_split_128(&ng_1, &ng_128, ng);
 
         /* Build wnaf representation for ng_1 and ng_128 */
-        bits_ng_1   = secp256k1_ecmult_wnaf(wnaf_ng_1,   129, &ng_1,   WINDOW_G);
-        bits_ng_128 = secp256k1_ecmult_wnaf(wnaf_ng_128, 129, &ng_128, WINDOW_G);
+        bits_ng_1   = secp256k1_ecmult_wnaf(wnaf_ng_1,   129, &ng_1,   WINDOW_G, &err);
+        bits_ng_128 = secp256k1_ecmult_wnaf(wnaf_ng_128, 129, &ng_128, WINDOW_G, &err);
+        if (err)
+            return 0;
+
         if (bits_ng_1 > bits) {
             bits = bits_ng_1;
         }
@@ -519,7 +563,9 @@ static void secp256k1_ecmult_strauss_wnaf(const secp256k1_ecmult_context *ctx, c
     }
 #else
     if (ng) {
-        bits_ng     = secp256k1_ecmult_wnaf(wnaf_ng,     256, ng,      WINDOW_G);
+        bits_ng     = secp256k1_ecmult_wnaf(wnaf_ng,     256, ng,      WINDOW_G, &err);
+        if (err)
+            return 0;
         if (bits_ng > bits) {
             bits = bits_ng;
         }
@@ -567,9 +613,10 @@ static void secp256k1_ecmult_strauss_wnaf(const secp256k1_ecmult_context *ctx, c
     if (!r->infinity) {
         secp256k1_fe_mul(&r->z, &r->z, &Z);
     }
+    return 1;
 }
 
-static void secp256k1_ecmult(const secp256k1_ecmult_context *ctx, secp256k1_gej *r, const secp256k1_gej *a, const secp256k1_scalar *na, const secp256k1_scalar *ng) {
+static int secp256k1_ecmult(const secp256k1_ecmult_context *ctx, secp256k1_gej *r, const secp256k1_gej *a, const secp256k1_scalar *na, const secp256k1_scalar *ng) {
     secp256k1_gej prej[ECMULT_TABLE_SIZE(WINDOW_A)];
     secp256k1_fe zr[ECMULT_TABLE_SIZE(WINDOW_A)];
     secp256k1_ge pre_a[ECMULT_TABLE_SIZE(WINDOW_A)];
@@ -586,7 +633,7 @@ static void secp256k1_ecmult(const secp256k1_ecmult_context *ctx, secp256k1_gej 
     state.pre_a_lam = pre_a_lam;
 #endif
     state.ps = ps;
-    secp256k1_ecmult_strauss_wnaf(ctx, &state, r, 1, a, na, ng);
+    return secp256k1_ecmult_strauss_wnaf(ctx, &state, r, 1, a, na, ng);
 }
 
 static size_t secp256k1_strauss_scratch_size(size_t n_points) {
@@ -609,30 +656,66 @@ static int secp256k1_ecmult_strauss_batch(const secp256k1_ecmult_context *ctx, s
         return 1;
     }
 
+    /* Checking for data overflow for the points */
+    if (n_points >= (INT_MAX / secp256k1_strauss_scratch_size(1)) - 1 ) {
+        return 0;
+    }
+
     if (!secp256k1_scratch_allocate_frame(scratch, secp256k1_strauss_scratch_size(n_points), STRAUSS_SCRATCH_OBJECTS)) {
         return 0;
     }
     points = (secp256k1_gej*)secp256k1_scratch_alloc(scratch, n_points * sizeof(secp256k1_gej));
+    if (points == NULL) {
+        secp256k1_scratch_deallocate_frame(scratch);
+        return 0;
+    }
     scalars = (secp256k1_scalar*)secp256k1_scratch_alloc(scratch, n_points * sizeof(secp256k1_scalar));
+    if (scalars==NULL) {
+        secp256k1_scratch_deallocate_frame(scratch);
+        return 0;
+    }
     state.prej = (secp256k1_gej*)secp256k1_scratch_alloc(scratch, n_points * ECMULT_TABLE_SIZE(WINDOW_A) * sizeof(secp256k1_gej));
+    if (state.prej==NULL) {
+        secp256k1_scratch_deallocate_frame(scratch);
+        return 0;
+    }
     state.zr = (secp256k1_fe*)secp256k1_scratch_alloc(scratch, n_points * ECMULT_TABLE_SIZE(WINDOW_A) * sizeof(secp256k1_fe));
+    if (state.zr==NULL) {
+        secp256k1_scratch_deallocate_frame(scratch);
+        return 0;
+    }
 #ifdef USE_ENDOMORPHISM
     state.pre_a = (secp256k1_ge*)secp256k1_scratch_alloc(scratch, n_points * 2 * ECMULT_TABLE_SIZE(WINDOW_A) * sizeof(secp256k1_ge));
+    if (state.pre_a==NULL) {
+        secp256k1_scratch_deallocate_frame(scratch);
+        return 0;
+    }
     state.pre_a_lam = state.pre_a + n_points * ECMULT_TABLE_SIZE(WINDOW_A);
 #else
     state.pre_a = (secp256k1_ge*)secp256k1_scratch_alloc(scratch, n_points * ECMULT_TABLE_SIZE(WINDOW_A) * sizeof(secp256k1_ge));
+    if (state.pre_a==NULL) {
+        secp256k1_scratch_deallocate_frame(scratch);
+        return 0;
+    }
 #endif
     state.ps = (struct secp256k1_strauss_point_state*)secp256k1_scratch_alloc(scratch, n_points * sizeof(struct secp256k1_strauss_point_state));
+    if (state.ps==NULL) {
+        secp256k1_scratch_deallocate_frame(scratch);
+        return 0;
+    }
 
     for (i = 0; i < n_points; i++) {
         secp256k1_ge point;
-        if (!cb(&scalars[i], &point, i+cb_offset, cbdata)) {
+        if (!cb(&scalars[i], &point, i+cb_offset, cbdata) || (!secp256k1_ge_is_infinity(&point) && !secp256k1_ge_is_valid_var(&point))) {
             secp256k1_scratch_deallocate_frame(scratch);
             return 0;
         }
         secp256k1_gej_set_ge(&points[i], &point);
     }
-    secp256k1_ecmult_strauss_wnaf(ctx, &state, r, n_points, points, scalars, inp_g_sc);
+    if (!secp256k1_ecmult_strauss_wnaf(ctx, &state, r, n_points, points, scalars, inp_g_sc)) {
+        secp256k1_scratch_deallocate_frame(scratch);
+        return 0;
+    }
     secp256k1_scratch_deallocate_frame(scratch);
     return 1;
 }
@@ -653,12 +736,15 @@ static size_t secp256k1_strauss_max_points(secp256k1_scratch *scratch) {
  *  - the number of words set is always WNAF_SIZE(w)
  *  - the returned skew is 0 or 1
  */
-static int secp256k1_wnaf_fixed(int *wnaf, const secp256k1_scalar *s, int w) {
+static int secp256k1_wnaf_fixed(int *wnaf, const secp256k1_scalar *s, int w, int * err) {
     int skew = 0;
     int pos;
     int max_pos;
     int last_w;
     const secp256k1_scalar *work = s;
+
+    if (*err)
+        return 0;
 
     if (secp256k1_scalar_is_zero(s)) {
         for (pos = 0; pos < WNAF_SIZE(w); pos++) {
@@ -671,7 +757,9 @@ static int secp256k1_wnaf_fixed(int *wnaf, const secp256k1_scalar *s, int w) {
         skew = 1;
     }
 
-    wnaf[0] = secp256k1_scalar_get_bits_var(work, 0, w) + skew;
+    wnaf[0] = secp256k1_scalar_get_bits_var(work, 0, w, err) + skew;
+    if (*err)
+        return 0;
     /* Compute last window size. Relevant when window size doesn't divide the
      * number of bits in the scalar */
     last_w = WNAF_BITS - (WNAF_SIZE(w) - 1) * w;
@@ -679,7 +767,9 @@ static int secp256k1_wnaf_fixed(int *wnaf, const secp256k1_scalar *s, int w) {
     /* Store the position of the first nonzero word in max_pos to allow
      * skipping leading zeros when calculating the wnaf. */
     for (pos = WNAF_SIZE(w) - 1; pos > 0; pos--) {
-        int val = secp256k1_scalar_get_bits_var(work, pos * w, pos == WNAF_SIZE(w)-1 ? last_w : w);
+        int val = secp256k1_scalar_get_bits_var(work, pos * w, pos == WNAF_SIZE(w)-1 ? last_w : w, err);
+        if (*err)
+            return 0;
         if(val != 0) {
             break;
         }
@@ -689,7 +779,9 @@ static int secp256k1_wnaf_fixed(int *wnaf, const secp256k1_scalar *s, int w) {
     pos = 1;
 
     while (pos <= max_pos) {
-        int val = secp256k1_scalar_get_bits_var(work, pos * w, pos == WNAF_SIZE(w)-1 ? last_w : w);
+        int val = secp256k1_scalar_get_bits_var(work, pos * w, pos == WNAF_SIZE(w)-1 ? last_w : w, err);
+        if (*err)
+            return 0;
         if ((val & 1) == 0) {
             wnaf[pos - 1] -= (1 << w);
             wnaf[pos] = (val + 1);
@@ -731,6 +823,8 @@ struct secp256k1_pippenger_state {
  * for every i < n_wnaf, first each point is added to a "bucket" corresponding
  * to the point's wnaf[i]. Second, the buckets are added together such that
  * r += 1*bucket[0] + 3*bucket[1] + 5*bucket[2] + ...
+ *
+ * Return 1 on success, 0 on failure
  */
 static int secp256k1_ecmult_pippenger_wnaf(secp256k1_gej *buckets, int bucket_window, struct secp256k1_pippenger_state *state, secp256k1_gej *r, const secp256k1_scalar *sc, const secp256k1_ge *pt, size_t num) {
     size_t n_wnaf = WNAF_SIZE(bucket_window+1);
@@ -740,11 +834,14 @@ static int secp256k1_ecmult_pippenger_wnaf(secp256k1_gej *buckets, int bucket_wi
     int j;
 
     for (np = 0; np < num; ++np) {
+        int err = 0;
         if (secp256k1_scalar_is_zero(&sc[np]) || secp256k1_ge_is_infinity(&pt[np])) {
             continue;
         }
         state->ps[no].input_pos = np;
-        state->ps[no].skew_na = secp256k1_wnaf_fixed(&state->wnaf_na[no*n_wnaf], &sc[np], bucket_window+1);
+        state->ps[no].skew_na = secp256k1_wnaf_fixed(&state->wnaf_na[no*n_wnaf], &sc[np], bucket_window+1, &err);
+        if (err)
+            return 0;
         no++;
     }
     secp256k1_gej_set_infinity(r);
@@ -905,9 +1002,13 @@ static size_t secp256k1_pippenger_bucket_window_inv(int bucket_window) {
 
 
 #ifdef USE_ENDOMORPHISM
-SECP256K1_INLINE static void secp256k1_ecmult_endo_split(secp256k1_scalar *s1, secp256k1_scalar *s2, secp256k1_ge *p1, secp256k1_ge *p2) {
+/* Note: control-flow and memory-access patterns are observable side channels, function currently processed by a
+ * non-constant-time multiplier. This behavior is accepted */
+/* Return 1 on suceess, 0 on failure */
+SECP256K1_INLINE static int secp256k1_ecmult_endo_split(secp256k1_scalar *s1, secp256k1_scalar *s2, secp256k1_ge *p1, secp256k1_ge *p2) {
     secp256k1_scalar tmp = *s1;
-    secp256k1_scalar_split_lambda(s1, s2, &tmp);
+    if (!secp256k1_scalar_split_lambda(s1, s2, &tmp))
+        return 0;
     secp256k1_ge_mul_lambda(p2, p1);
 
     if (secp256k1_scalar_is_high(s1)) {
@@ -918,6 +1019,7 @@ SECP256K1_INLINE static void secp256k1_ecmult_endo_split(secp256k1_scalar *s1, s
         secp256k1_scalar_negate(s2, s2);
         secp256k1_ge_neg(p2, p2);
     }
+    return 1;
 }
 #endif
 
@@ -960,40 +1062,79 @@ static int secp256k1_ecmult_pippenger_batch(const secp256k1_ecmult_context *ctx,
     }
 
     bucket_window = secp256k1_pippenger_bucket_window(n_points);
+
+    /* Data overflow checking */
+    if (n_points >= ((INT_MAX - secp256k1_pippenger_scratch_size(0, bucket_window)) / secp256k1_pippenger_scratch_size(1, 0)) - 1 ) {
+        return 0;
+    }
+
     if (!secp256k1_scratch_allocate_frame(scratch, secp256k1_pippenger_scratch_size(n_points, bucket_window), PIPPENGER_SCRATCH_OBJECTS)) {
         return 0;
     }
     points = (secp256k1_ge *) secp256k1_scratch_alloc(scratch, entries * sizeof(*points));
+    if (points == NULL) {
+        secp256k1_scratch_deallocate_frame(scratch);
+        return 0;
+    }
     scalars = (secp256k1_scalar *) secp256k1_scratch_alloc(scratch, entries * sizeof(*scalars));
+    if (scalars == NULL) {
+        secp256k1_scratch_deallocate_frame(scratch);
+        return 0;
+    }
     state_space = (struct secp256k1_pippenger_state *) secp256k1_scratch_alloc(scratch, sizeof(*state_space));
+    if (state_space == NULL) {
+        secp256k1_scratch_deallocate_frame(scratch);
+        return 0;
+    }
     state_space->ps = (struct secp256k1_pippenger_point_state *) secp256k1_scratch_alloc(scratch, entries * sizeof(*state_space->ps));
+    if (state_space->ps == NULL) {
+        secp256k1_scratch_deallocate_frame(scratch);
+        return 0;
+    }
     state_space->wnaf_na = (int *) secp256k1_scratch_alloc(scratch, entries*(WNAF_SIZE(bucket_window+1)) * sizeof(int));
+    if (state_space->wnaf_na == NULL) {
+        secp256k1_scratch_deallocate_frame(scratch);
+        return 0;
+    }
     buckets = (secp256k1_gej *) secp256k1_scratch_alloc(scratch, (1<<bucket_window) * sizeof(*buckets));
+    if (buckets == NULL) {
+        secp256k1_scratch_deallocate_frame(scratch);
+        return 0;
+    }
 
     if (inp_g_sc != NULL) {
         scalars[0] = *inp_g_sc;
         points[0] = secp256k1_ge_const_g;
         idx++;
 #ifdef USE_ENDOMORPHISM
-        secp256k1_ecmult_endo_split(&scalars[0], &scalars[1], &points[0], &points[1]);
+        if (!secp256k1_ecmult_endo_split(&scalars[0], &scalars[1], &points[0], &points[1])) {
+            secp256k1_scratch_deallocate_frame(scratch);
+            return 0;
+        }
         idx++;
 #endif
     }
 
     while (point_idx < n_points) {
-        if (!cb(&scalars[idx], &points[idx], point_idx + cb_offset, cbdata)) {
+        if (!cb(&scalars[idx], &points[idx], point_idx + cb_offset, cbdata) || (!secp256k1_ge_is_infinity(&points[idx]) && !secp256k1_ge_is_valid_var(&points[idx]))) {
             secp256k1_scratch_deallocate_frame(scratch);
             return 0;
         }
         idx++;
 #ifdef USE_ENDOMORPHISM
-        secp256k1_ecmult_endo_split(&scalars[idx - 1], &scalars[idx], &points[idx - 1], &points[idx]);
+        if (!secp256k1_ecmult_endo_split(&scalars[idx - 1], &scalars[idx], &points[idx - 1], &points[idx])) {
+            secp256k1_scratch_deallocate_frame(scratch);
+            return 0;
+        }
         idx++;
 #endif
         point_idx++;
     }
 
-    secp256k1_ecmult_pippenger_wnaf(buckets, bucket_window, state_space, r, scalars, points, idx);
+    if (!secp256k1_ecmult_pippenger_wnaf(buckets, bucket_window, state_space, r, scalars, points, idx)) {
+        secp256k1_scratch_deallocate_frame(scratch);
+        return 0;
+    }
 
     /* Clear data */
     for(i = 0; (size_t)i < idx; i++) {
@@ -1066,17 +1207,19 @@ static int secp256k1_ecmult_multi_var_simple(const secp256k1_ecmult_context *ctx
     secp256k1_scalar_set_int(&szero, 0);
     /* r = inp_g_sc*G */
     secp256k1_gej_set_infinity(r);
-    secp256k1_ecmult(ctx, r, &tmpj, &szero, inp_g_sc);
+    if (!secp256k1_ecmult(ctx, r, &tmpj, &szero, inp_g_sc))
+        return 0;
     for (point_idx = 0; point_idx < n_points; point_idx++) {
         secp256k1_ge point;
         secp256k1_gej pointj;
         secp256k1_scalar scalar;
-        if (!cb(&scalar, &point, point_idx, cbdata)) {
+        if (!cb(&scalar, &point, point_idx, cbdata) || (!secp256k1_ge_is_infinity(&point) && !secp256k1_ge_is_valid_var(&point))) {
             return 0;
         }
         /* r += scalar*point */
         secp256k1_gej_set_ge(&pointj, &point);
-        secp256k1_ecmult(ctx, &tmpj, &pointj, &scalar, NULL);
+        if (!secp256k1_ecmult(ctx, &tmpj, &pointj, &scalar, NULL))
+            return 0;
         secp256k1_gej_add_var(r, r, &tmpj, NULL);
     }
     return 1;
@@ -1097,7 +1240,8 @@ static int secp256k1_ecmult_multi_var(const secp256k1_ecmult_context *ctx, secp2
     } else if (n == 0) {
         secp256k1_scalar szero;
         secp256k1_scalar_set_int(&szero, 0);
-        secp256k1_ecmult(ctx, r, r, &szero, inp_g_sc);
+        if (!secp256k1_ecmult(ctx, r, r, &szero, inp_g_sc))
+            return 0;
         return 1;
     }
     if (scratch == NULL) {

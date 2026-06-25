@@ -59,3 +59,14 @@ libsecp256k1 is built using autotools:
     $ make
     $ ./tests
     $ sudo make install  # optional
+
+Build and test with all features (at MacOS)
+-----------
+
+    $ ./autogen.sh
+    $ export CPPFLAGS="-I$(brew --prefix gmp)/include"
+    $ export LDFLAGS="-L$(brew --prefix gmp)/lib"   
+    $ ./configure --enable-experimental --enable-module-rangeproof --enable-module-surjectionproof --enable-module-commitment --enable-module-generator --enable-module-whitelist --enable-module-aggsig --enable-module-bulletproof --enable-module-ecdh --enable-module-recovery --enable-module-schnorrsig --enable-endomorphism
+    $ make
+    $ ./tests; ./exhaustive_tests;  ./bench_recover; ./bench_rangeproof; ./bench_generator; ./bench_ecdh; ./bench_schnorrsig; ./bench_whitelist; ./bench_ecmult; ./bench_bulletproof
+

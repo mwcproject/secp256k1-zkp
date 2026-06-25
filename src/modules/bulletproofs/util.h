@@ -69,14 +69,12 @@ static void secp256k1_scalar_dot_product(secp256k1_scalar *r, const secp256k1_sc
     }
 }
 
-static void secp256k1_scalar_inverse_all_var(secp256k1_scalar *r, const secp256k1_scalar *a, size_t len) {
+static int secp256k1_scalar_inverse_all_var(secp256k1_scalar *r, const secp256k1_scalar *a, size_t len) {
     secp256k1_scalar u;
     size_t i;
     if (len < 1) {
-        return;
+        return 1;
     }
-
-    VERIFY_CHECK((r + len <= a) || (a + len <= r));
 
     r[0] = a[0];
 
@@ -85,7 +83,8 @@ static void secp256k1_scalar_inverse_all_var(secp256k1_scalar *r, const secp256k
         secp256k1_scalar_mul(&r[i], &r[i - 1], &a[i]);
     }
 
-    secp256k1_scalar_inverse_var(&u, &r[--i]);
+    if (!secp256k1_scalar_inverse_var(&u, &r[--i]))
+        return 0;
 
     while (i > 0) {
         size_t j = i--;
@@ -94,22 +93,35 @@ static void secp256k1_scalar_inverse_all_var(secp256k1_scalar *r, const secp256k
     }
 
     r[0] = u;
+
+    return 1;
 }
 
-SECP256K1_INLINE static void secp256k1_bulletproof_serialize_points(unsigned char *out, secp256k1_ge *pt, size_t n) {
+/* Return 1 on success, 0 on failure.
+ * Note, in case of failure out will be corrupted - partly filled  */
+SECP256K1_INLINE static int secp256k1_bulletproof_serialize_points(unsigned char *out, secp256k1_ge *pt, size_t n) {
     const size_t bitveclen = (n + 7) / 8;
     size_t i;
+    int res;
+    int err = 0;
 
     memset(out, 0, bitveclen);
     for (i = 0; i < n; i++) {
         secp256k1_fe pointx;
+        if (pt[i].infinity) {
+            return 0;
+        }
         pointx = pt[i].x;
         secp256k1_fe_normalize(&pointx);
         secp256k1_fe_get_b32(&out[bitveclen + i*32], &pointx);
-        if (!secp256k1_fe_is_quad_var(&pt[i].y)) {
+        res = secp256k1_fe_is_quad_var(&pt[i].y, &err);
+        if (err)
+            return 0;
+        if (!res) {
             out[i/8] |= (1ull << (i % 8));
         }
     }
+    return 1;
 }
 
 SECP256K1_INLINE static int secp256k1_bulletproof_deserialize_point(secp256k1_ge *pt, const unsigned char *data, size_t i, size_t n) {
@@ -117,7 +129,9 @@ SECP256K1_INLINE static int secp256k1_bulletproof_deserialize_point(secp256k1_ge
     const size_t offset = bitveclen + i*32;
     secp256k1_fe fe;
 
-    secp256k1_fe_set_b32(&fe, &data[offset]);
+    if (!secp256k1_fe_set_b32(&fe, &data[offset])) {
+        return 0;
+    }
     if (secp256k1_ge_set_xquad(pt, &fe)) {
         if (data[i / 8] & (1 << (i % 8))) {
             secp256k1_ge_neg(pt, pt);
@@ -128,11 +142,21 @@ SECP256K1_INLINE static int secp256k1_bulletproof_deserialize_point(secp256k1_ge
     }
 }
 
-static void secp256k1_bulletproof_update_commit(unsigned char *commit, const secp256k1_ge *lpt, const secp256k1_ge *rpt) {
+/* Return 1 on success, 0 on failure.  */
+static int secp256k1_bulletproof_update_commit(unsigned char *commit, const secp256k1_ge *lpt, const secp256k1_ge *rpt) {
     secp256k1_fe pointx;
     secp256k1_sha256 sha256;
     unsigned char lrparity;
-    lrparity = (!secp256k1_fe_is_quad_var(&lpt->y) << 1) + !secp256k1_fe_is_quad_var(&rpt->y);
+    int err=0;
+    int lpt_res;
+    int rpt_res;
+
+    lpt_res = secp256k1_fe_is_quad_var(&lpt->y, &err);
+    rpt_res = secp256k1_fe_is_quad_var(&rpt->y, &err);
+    if (err)
+        return 0;
+
+    lrparity = (!lpt_res << 1) + !rpt_res;
     secp256k1_sha256_initialize(&sha256);
     secp256k1_sha256_write(&sha256, commit, 32);
     secp256k1_sha256_write(&sha256, &lrparity, 1);
@@ -145,6 +169,8 @@ static void secp256k1_bulletproof_update_commit(unsigned char *commit, const sec
     secp256k1_fe_get_b32(commit, &pointx);
     secp256k1_sha256_write(&sha256, commit, 32);
     secp256k1_sha256_finalize(&sha256, commit);
+
+    return 1;
 }
 
 #endif

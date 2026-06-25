@@ -8,6 +8,7 @@
 #define SECP256K1_HASH_IMPL_H
 
 #include "hash.h"
+#include "util.h"
 
 #include <stdlib.h>
 #include <stdint.h>
@@ -115,6 +116,7 @@ static void secp256k1_sha256_transform(uint32_t* s, const uint32_t* chunk) {
     Round(f, g, h, a, b, c, d, e, 0x8cc70208, w11 += sigma1(w9) + w4 + sigma0(w12));
     Round(e, f, g, h, a, b, c, d, 0x90befffa, w12 += sigma1(w10) + w5 + sigma0(w13));
     Round(d, e, f, g, h, a, b, c, 0xa4506ceb, w13 += sigma1(w11) + w6 + sigma0(w14));
+    /* Note, we don't need to update w14 and w15. If you not agree - explain what exactly is a problem, write tests to validate before report it */
     Round(c, d, e, f, g, h, a, b, 0xbef9a3f7, w14 + sigma1(w12) + w7 + sigma0(w15));
     Round(b, c, d, e, f, g, h, a, 0xc67178f2, w15 + sigma1(w13) + w8 + sigma0(w0));
 
@@ -128,6 +130,7 @@ static void secp256k1_sha256_transform(uint32_t* s, const uint32_t* chunk) {
     s[7] += h;
 }
 
+/* Assuming that SIZE_MAX buffer is more than enough for hashing. We never can get oversized stream */
 static void secp256k1_sha256_write(secp256k1_sha256 *hash, const unsigned char *data, size_t len) {
     size_t bufsize = hash->bytes & 0x3F;
     hash->bytes += len;
@@ -157,9 +160,11 @@ static void secp256k1_sha256_finalize(secp256k1_sha256 *hash, unsigned char *out
     secp256k1_sha256_write(hash, (const unsigned char*)sizedesc, 8);
     for (i = 0; i < 8; i++) {
         out[i] = BE32(hash->s[i]);
-        hash->s[i] = 0;
     }
     memcpy(out32, (const unsigned char*)out, 32);
+    secp256k1_memclear(hash, sizeof(*hash));
+    secp256k1_memclear(sizedesc, sizeof(sizedesc));
+    secp256k1_memclear(out, sizeof(out));
 }
 
 static void secp256k1_hmac_sha256_initialize(secp256k1_hmac_sha256 *hash, const unsigned char *key, size_t keylen) {
@@ -187,7 +192,7 @@ static void secp256k1_hmac_sha256_initialize(secp256k1_hmac_sha256 *hash, const 
         rkey[n] ^= 0x5c ^ 0x36;
     }
     secp256k1_sha256_write(&hash->inner, rkey, sizeof(rkey));
-    memset(rkey, 0, sizeof(rkey));
+    secp256k1_memclear(rkey, sizeof(rkey));
 }
 
 static void secp256k1_hmac_sha256_write(secp256k1_hmac_sha256 *hash, const unsigned char *data, size_t size) {
@@ -198,7 +203,7 @@ static void secp256k1_hmac_sha256_finalize(secp256k1_hmac_sha256 *hash, unsigned
     unsigned char temp[32];
     secp256k1_sha256_finalize(&hash->inner, temp);
     secp256k1_sha256_write(&hash->outer, temp, 32);
-    memset(temp, 0, 32);
+    secp256k1_memclear(temp, 32);
     secp256k1_sha256_finalize(&hash->outer, out32);
 }
 
@@ -249,7 +254,7 @@ static void secp256k1_rfc6979_hmac_sha256_generate(secp256k1_rfc6979_hmac_sha256
 
     while (outlen > 0) {
         secp256k1_hmac_sha256 hmac;
-        int now = outlen;
+        size_t now = outlen;
         secp256k1_hmac_sha256_initialize(&hmac, rng->k, 32);
         secp256k1_hmac_sha256_write(&hmac, rng->v, 32);
         secp256k1_hmac_sha256_finalize(&hmac, rng->v);
@@ -265,8 +270,8 @@ static void secp256k1_rfc6979_hmac_sha256_generate(secp256k1_rfc6979_hmac_sha256
 }
 
 static void secp256k1_rfc6979_hmac_sha256_finalize(secp256k1_rfc6979_hmac_sha256 *rng) {
-    memset(rng->k, 0, 32);
-    memset(rng->v, 0, 32);
+    secp256k1_memclear(rng->k, 32);
+    secp256k1_memclear(rng->v, 32);
     rng->retry = 0;
 }
 

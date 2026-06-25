@@ -25,14 +25,17 @@
 #endif
 
 #ifndef USE_NUM_NONE
-static void secp256k1_scalar_get_num(secp256k1_num *r, const secp256k1_scalar *a) {
+static int secp256k1_scalar_get_num(secp256k1_num *r, const secp256k1_scalar *a) {
     unsigned char c[32];
+    int err = 0;
     secp256k1_scalar_get_b32(c, a);
-    secp256k1_num_set_bin(r, c, 32);
+    secp256k1_num_set_bin(r, c, 32, &err);
+    return err == 0;
 }
 
 /** secp256k1 curve order, see secp256k1_ecdsa_const_order_as_fe in ecdsa_impl.h */
-static void secp256k1_scalar_order_get_num(secp256k1_num *r) {
+static int secp256k1_scalar_order_get_num(secp256k1_num *r) {
+    int err = 0;
 #if defined(EXHAUSTIVE_TEST_ORDER)
     static const unsigned char order[32] = {
         0,0,0,0,0,0,0,0,
@@ -48,7 +51,8 @@ static void secp256k1_scalar_order_get_num(secp256k1_num *r) {
         0xBF,0xD2,0x5E,0x8C,0xD0,0x36,0x41,0x41
     };
 #endif
-    secp256k1_num_set_bin(r, order, 32);
+    secp256k1_num_set_bin(r, order, 32, &err);
+    return err == 0;
 }
 #endif
 
@@ -222,18 +226,27 @@ SECP256K1_INLINE static int secp256k1_scalar_is_even(const secp256k1_scalar *a) 
 }
 #endif
 
-static void secp256k1_scalar_inverse_var(secp256k1_scalar *r, const secp256k1_scalar *x) {
+static int secp256k1_scalar_inverse_var(secp256k1_scalar *r, const secp256k1_scalar *x) {
 #if defined(USE_SCALAR_INV_BUILTIN)
+    if (secp256k1_scalar_is_zero(x)) {
+        return 0;
+    }
     secp256k1_scalar_inverse(r, x);
 #elif defined(USE_SCALAR_INV_NUM)
     unsigned char b[32];
+    int err = 0;
     secp256k1_num n, m;
     secp256k1_scalar t = *x;
     secp256k1_scalar_get_b32(b, &t);
-    secp256k1_num_set_bin(&n, b, 32);
-    secp256k1_scalar_order_get_num(&m);
-    secp256k1_num_mod_inverse(&n, &n, &m);
-    secp256k1_num_get_bin(b, 32, &n);
+    secp256k1_num_set_bin(&n, b, 32, &err);
+    if (err)
+        return 0;
+    if (!secp256k1_scalar_order_get_num(&m))
+        return 0;
+    secp256k1_num_mod_inverse(&n, &n, &m, &err);
+    secp256k1_num_get_bin(b, 32, &n, &err);
+    if (err)
+        return 0;
     secp256k1_scalar_set_b32(r, b, NULL);
     /* Verify that the inverse was computed correctly, without GMP code. */
     secp256k1_scalar_mul(&t, &t, r);
@@ -241,6 +254,7 @@ static void secp256k1_scalar_inverse_var(secp256k1_scalar *r, const secp256k1_sc
 #else
 #error "Please select scalar inverse implementation"
 #endif
+    return 1;
 }
 
 #ifdef USE_ENDOMORPHISM
@@ -250,10 +264,13 @@ static void secp256k1_scalar_inverse_var(secp256k1_scalar *r, const secp256k1_sc
  * full case we don't bother making k1 and k2 be small, we just want them to be
  * nontrivial to get full test coverage for the exhaustive tests. We therefore
  * (arbitrarily) set k2 = k + 5 and k1 = k - k2 * lambda.
+ *
+ * Return 1 on success, 0 on failure
  */
-static void secp256k1_scalar_split_lambda(secp256k1_scalar *r1, secp256k1_scalar *r2, const secp256k1_scalar *a) {
-    *r2 = (*a + 5) % EXHAUSTIVE_TEST_ORDER;
-    *r1 = (*a + (EXHAUSTIVE_TEST_ORDER - *r2) * EXHAUSTIVE_TEST_LAMBDA) % EXHAUSTIVE_TEST_ORDER;
+static int secp256k1_scalar_split_lambda(secp256k1_scalar *r1, secp256k1_scalar *r2, const secp256k1_scalar *a0) {
+    *r2 = (*a0 + 5) % EXHAUSTIVE_TEST_ORDER;
+    *r1 = (*a0 + (EXHAUSTIVE_TEST_ORDER - *r2) * EXHAUSTIVE_TEST_LAMBDA) % EXHAUSTIVE_TEST_ORDER;
+    return 1;
 }
 #else
 /**
@@ -294,7 +311,7 @@ static void secp256k1_scalar_split_lambda(secp256k1_scalar *r1, secp256k1_scalar
  * The function below splits a in r1 and r2, such that r1 + lambda * r2 == a (mod order).
  */
 
-static void secp256k1_scalar_split_lambda(secp256k1_scalar *r1, secp256k1_scalar *r2, const secp256k1_scalar *a) {
+static int secp256k1_scalar_split_lambda(secp256k1_scalar *r1, secp256k1_scalar *r2, const secp256k1_scalar *a) {
     secp256k1_scalar c1, c2;
     static const secp256k1_scalar minus_lambda = SECP256K1_SCALAR_CONST(
         0xAC9C52B3UL, 0x3FA3CF1FUL, 0x5AD9E3FDUL, 0x77ED9BA4UL,
@@ -316,16 +333,19 @@ static void secp256k1_scalar_split_lambda(secp256k1_scalar *r1, secp256k1_scalar
         0x00000000UL, 0x00000000UL, 0x00000000UL, 0x0000E443UL,
         0x7ED6010EUL, 0x88286F54UL, 0x7FA90ABFUL, 0xE4C42212UL
     );
-    VERIFY_CHECK(r1 != a);
-    VERIFY_CHECK(r2 != a);
+    if (r1 == a || r2 == a || r1 == r2)
+        return 0;
     /* these _var calls are constant time since the shift amount is constant */
-    secp256k1_scalar_mul_shift_var(&c1, a, &g1, 272);
-    secp256k1_scalar_mul_shift_var(&c2, a, &g2, 272);
+    if (!secp256k1_scalar_mul_shift_var(&c1, a, &g1, 272))
+        return 0;
+    if (!secp256k1_scalar_mul_shift_var(&c2, a, &g2, 272))
+        return 0;
     secp256k1_scalar_mul(&c1, &c1, &minus_b1);
     secp256k1_scalar_mul(&c2, &c2, &minus_b2);
     secp256k1_scalar_add(r2, &c1, &c2);
     secp256k1_scalar_mul(r1, r2, &minus_lambda);
     secp256k1_scalar_add(r1, r1, a);
+    return 1;
 }
 #endif
 #endif

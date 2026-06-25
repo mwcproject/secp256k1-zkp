@@ -223,9 +223,14 @@ static void secp256k1_fe_inv(secp256k1_fe *r, const secp256k1_fe *a) {
     secp256k1_fe_mul(r, a, &t1);
 }
 
-static void secp256k1_fe_inv_var(secp256k1_fe *r, const secp256k1_fe *a) {
+static int secp256k1_fe_inv_var(secp256k1_fe *r, const secp256k1_fe *a) {
 #if defined(USE_FIELD_INV_BUILTIN)
+    secp256k1_fe c = *a;
+    if (secp256k1_fe_normalizes_to_zero_var(&c)) {
+        return 0;
+    }
     secp256k1_fe_inv(r, a);
+    return 1;
 #elif defined(USE_FIELD_INV_NUM)
     secp256k1_num n, m;
     static const secp256k1_fe negone = SECP256K1_FE_CONST(
@@ -240,34 +245,40 @@ static void secp256k1_fe_inv_var(secp256k1_fe *r, const secp256k1_fe *a) {
         0xFF,0xFF,0xFF,0xFE,0xFF,0xFF,0xFC,0x2F
     };
     unsigned char b[32];
-    int res;
+    int err = 0;
     secp256k1_fe c = *a;
     secp256k1_fe_normalize_var(&c);
     secp256k1_fe_get_b32(b, &c);
-    secp256k1_num_set_bin(&n, b, 32);
-    secp256k1_num_set_bin(&m, prime, 32);
-    secp256k1_num_mod_inverse(&n, &n, &m);
-    secp256k1_num_get_bin(b, 32, &n);
-    res = secp256k1_fe_set_b32(r, b);
-    (void)res;
-    VERIFY_CHECK(res);
+    secp256k1_num_set_bin(&n, b, 32, &err);
+    secp256k1_num_set_bin(&m, prime, 32, &err);
+    secp256k1_num_mod_inverse(&n, &n, &m, &err);
+    secp256k1_num_get_bin(b, 32, &n, &err);
+    if (err) {
+        return 0;
+    }
+    /* Note: Assuming that code is safe, failte should nevere happen */
+    /* We can't return error, all callers unable to handle it */
+    if (!secp256k1_fe_set_b32(r, b))
+        return 0;
     /* Verify the result is the (unique) valid inverse using non-GMP code. */
     secp256k1_fe_mul(&c, &c, r);
     secp256k1_fe_add(&c, &negone);
     CHECK(secp256k1_fe_normalizes_to_zero_var(&c));
+    return 1;
 #else
 #error "Please select field inverse implementation"
 #endif
 }
 
-static void secp256k1_fe_inv_all_var(secp256k1_fe *r, const secp256k1_fe *a, size_t len) {
+static int secp256k1_fe_inv_all_var(secp256k1_fe *r, const secp256k1_fe *a, size_t len) {
     secp256k1_fe u;
     size_t i;
     if (len < 1) {
-        return;
+        return 1;
     }
 
-    VERIFY_CHECK((r + len <= a) || (a + len <= r));
+    /* Was flagged as not safe for compiler optimization. By C specification it is incorrect. */
+    /* VERIFY_CHECK((r + len <= a) || (a + len <= r)); */
 
     r[0] = a[0];
 
@@ -276,7 +287,9 @@ static void secp256k1_fe_inv_all_var(secp256k1_fe *r, const secp256k1_fe *a, siz
         secp256k1_fe_mul(&r[i], &r[i - 1], &a[i]);
     }
 
-    secp256k1_fe_inv_var(&u, &r[--i]);
+    if (! secp256k1_fe_inv_var(&u, &r[--i])) {
+        return 0;
+    }
 
     while (i > 0) {
         size_t j = i--;
@@ -285,13 +298,16 @@ static void secp256k1_fe_inv_all_var(secp256k1_fe *r, const secp256k1_fe *a, siz
     }
 
     r[0] = u;
+
+    return 1;
 }
 
-static int secp256k1_fe_is_quad_var(const secp256k1_fe *a) {
+static int secp256k1_fe_is_quad_var(const secp256k1_fe *a, int *err) {
 #ifndef USE_NUM_NONE
     unsigned char b[32];
     secp256k1_num n;
     secp256k1_num m;
+    int res;
     /* secp256k1 field prime, value p defined in "Standards for Efficient Cryptography" (SEC2) 2.7.1. */
     static const unsigned char prime[32] = {
         0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
@@ -301,14 +317,26 @@ static int secp256k1_fe_is_quad_var(const secp256k1_fe *a) {
     };
 
     secp256k1_fe c = *a;
+
+    if (*err)
+        return 0;
+
     secp256k1_fe_normalize_var(&c);
     secp256k1_fe_get_b32(b, &c);
-    secp256k1_num_set_bin(&n, b, 32);
-    secp256k1_num_set_bin(&m, prime, 32);
-    return secp256k1_num_jacobi(&n, &m) >= 0;
+    secp256k1_num_set_bin(&n, b, 32, err);
+    secp256k1_num_set_bin(&m, prime, 32, err);
+    res = secp256k1_num_jacobi(&n, &m, err);
+    if (*err)
+        return 0;
+    return res >= 0;
 #else
+    /* secp256k1_fe_sqrt is documented to require input magnitude <= 8, that is why we better to normalize a first */
+    secp256k1_fe c = *a;
     secp256k1_fe r;
-    return secp256k1_fe_sqrt(&r, a);
+    if (*err)
+        return 0;
+    secp256k1_fe_normalize_var(&c);
+    return secp256k1_fe_sqrt(&r, &c);
 #endif
 }
 

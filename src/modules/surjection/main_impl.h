@@ -18,6 +18,7 @@
 static size_t secp256k1_count_bits_set(const unsigned char* data, size_t count) {
     size_t ret = 0;
     size_t i;
+    VERIFY_CHECK(count <= SECP256K1_SURJECTIONPROOF_MAX_N_INPUTS / 8);
     for (i = 0; i < count; i++) {
 #ifdef HAVE_BUILTIN_POPCOUNT
 	ret += __builtin_popcount(data[i]);
@@ -35,9 +36,102 @@ static size_t secp256k1_count_bits_set(const unsigned char* data, size_t count) 
     return ret;
 }
 
+static int secp256k1_surjectionproof_valid_n_inputs(const secp256k1_surjectionproof *proof) {
+    return proof->n_inputs <= SECP256K1_SURJECTIONPROOF_MAX_N_INPUTS;
+}
+
+static unsigned char secp256k1_surjectionproof_input_mask(size_t n_inputs) {
+    size_t remainder = n_inputs & 7;
+    if (remainder == 0) {
+        return 0xFF;
+    }
+    return (unsigned char)((1U << remainder) - 1U);
+}
+
+static int secp256k1_surjectionproof_valid_bitmap(const unsigned char *used_inputs, size_t n_inputs) {
+    size_t used_inputs_len;
+    unsigned char mask;
+    VERIFY_CHECK(n_inputs <= SECP256K1_SURJECTIONPROOF_MAX_N_INPUTS);
+    used_inputs_len = (n_inputs + 7) / 8;
+    if (used_inputs_len == 0) {
+        return 1;
+    }
+    mask = secp256k1_surjectionproof_input_mask(n_inputs);
+    return (used_inputs[used_inputs_len - 1] & (unsigned char)~mask) == 0;
+}
+
+static size_t secp256k1_surjectionproof_count_used_inputs(const unsigned char *used_inputs, size_t n_inputs) {
+    size_t used_inputs_len;
+    unsigned char last_input_byte;
+
+    VERIFY_CHECK(n_inputs <= SECP256K1_SURJECTIONPROOF_MAX_N_INPUTS);
+    used_inputs_len = (n_inputs + 7) / 8;
+    if (used_inputs_len == 0) {
+        return 0;
+    }
+    if ((n_inputs & 7) == 0) {
+        return secp256k1_count_bits_set(used_inputs, used_inputs_len);
+    }
+    last_input_byte = used_inputs[used_inputs_len - 1] & secp256k1_surjectionproof_input_mask(n_inputs);
+    return secp256k1_count_bits_set(used_inputs, used_inputs_len - 1) + secp256k1_count_bits_set(&last_input_byte, 1);
+}
+
+static int secp256k1_surjection_gen_nonce(secp256k1_scalar *nonce, const secp256k1_scalar *blinding_key, const unsigned char *msg32, const secp256k1_gej *ring_pubkeys, size_t n_pubkeys, size_t ring_input_index) {
+    secp256k1_sha256 sha256;
+    secp256k1_ge pubkey;
+    secp256k1_gej pubkeyj;
+    unsigned char nonce32[32];
+    unsigned char seckey32[32];
+    unsigned char pubkey32[33];
+    size_t pubkey_len = sizeof(pubkey32);
+    size_t i;
+
+    VERIFY_CHECK(nonce != NULL);
+    VERIFY_CHECK(blinding_key != NULL);
+    VERIFY_CHECK(msg32 != NULL);
+    VERIFY_CHECK(ring_pubkeys != NULL);
+
+    secp256k1_scalar_get_b32(seckey32, blinding_key);
+    secp256k1_sha256_initialize(&sha256);
+    secp256k1_sha256_write(&sha256, (const unsigned char*)"surjection-nonce", 16);
+    secp256k1_sha256_write(&sha256, seckey32, sizeof(seckey32));
+    secp256k1_sha256_write(&sha256, msg32, 32);
+    nonce32[0] = ring_input_index;
+    nonce32[1] = ring_input_index >> 8;
+    nonce32[2] = ring_input_index >> 16;
+    nonce32[3] = ring_input_index >> 24;
+    secp256k1_sha256_write(&sha256, nonce32, 4);
+    nonce32[0] = n_pubkeys;
+    nonce32[1] = n_pubkeys >> 8;
+    nonce32[2] = n_pubkeys >> 16;
+    nonce32[3] = n_pubkeys >> 24;
+    secp256k1_sha256_write(&sha256, nonce32, 4);
+    for (i = 0; i < n_pubkeys; i++) {
+        pubkey_len = sizeof(pubkey32);
+        pubkeyj = ring_pubkeys[i];
+        if (!secp256k1_ge_set_gej_var(&pubkey, &pubkeyj)) {
+            secp256k1_memclear(seckey32, sizeof(seckey32));
+            secp256k1_memclear(nonce32, sizeof(nonce32));
+            return 0;
+        }
+        if (!secp256k1_eckey_pubkey_serialize(&pubkey, pubkey32, &pubkey_len, 1)) {
+            secp256k1_memclear(seckey32, sizeof(seckey32));
+            secp256k1_memclear(nonce32, sizeof(nonce32));
+            return 0;
+        }
+        secp256k1_sha256_write(&sha256, pubkey32, pubkey_len);
+    }
+    secp256k1_sha256_finalize(&sha256, nonce32);
+    secp256k1_scalar_set_b32(nonce, nonce32, NULL);
+    secp256k1_memclear(seckey32, sizeof(seckey32));
+    secp256k1_memclear(nonce32, sizeof(nonce32));
+    return !secp256k1_scalar_is_zero(nonce);
+}
+
 int secp256k1_surjectionproof_parse(const secp256k1_context* ctx, secp256k1_surjectionproof *proof, const unsigned char *input, size_t inputlen) {
     size_t n_inputs;
     size_t signature_len;
+    size_t  used_inputs;
 
     VERIFY_CHECK(ctx != NULL);
     ARG_CHECK(proof != NULL);
@@ -47,7 +141,7 @@ int secp256k1_surjectionproof_parse(const secp256k1_context* ctx, secp256k1_surj
     if (inputlen < 2) {
         return 0;
     }
-    n_inputs = ((size_t) (input[1] << 8)) + input[0];
+    n_inputs = ((size_t)input[1] << 8) + (size_t)input[0];
     if (n_inputs > SECP256K1_SURJECTIONPROOF_MAX_N_INPUTS) {
         return 0;
     }
@@ -55,7 +149,14 @@ int secp256k1_surjectionproof_parse(const secp256k1_context* ctx, secp256k1_surj
         return 0;
     }
 
-    signature_len = 32 * (1 + secp256k1_count_bits_set(&input[2], (n_inputs + 7) / 8));
+    if (!secp256k1_surjectionproof_valid_bitmap(&input[2], n_inputs)) {
+        return 0;
+    }
+    used_inputs = secp256k1_surjectionproof_count_used_inputs(&input[2], n_inputs);
+    if (used_inputs==0) {
+        return 0;
+    }
+    signature_len = 32 * (1 + used_inputs);
     if (inputlen != 2 + (n_inputs + 7) / 8 + signature_len) {
         return 0;
     }
@@ -69,23 +170,32 @@ int secp256k1_surjectionproof_parse(const secp256k1_context* ctx, secp256k1_surj
 int secp256k1_surjectionproof_serialize(const secp256k1_context* ctx, unsigned char *output, size_t *outputlen, const secp256k1_surjectionproof *proof) {
     size_t signature_len;
     size_t serialized_len;
+    size_t used_inputs_len;
+    size_t used_inputs;
 
     VERIFY_CHECK(ctx != NULL);
     ARG_CHECK(output != NULL);
     ARG_CHECK(outputlen != NULL);
     ARG_CHECK(proof != NULL);
+    ARG_CHECK(secp256k1_surjectionproof_valid_n_inputs(proof));
+    ARG_CHECK(secp256k1_surjectionproof_valid_bitmap(proof->used_inputs, proof->n_inputs));
     (void) ctx;
 
-    signature_len = 32 * (1 + secp256k1_count_bits_set(proof->used_inputs, (proof->n_inputs + 7) / 8));
-    serialized_len = 2 + (proof->n_inputs + 7) / 8 + signature_len;
+    used_inputs_len = (proof->n_inputs + 7) / 8;
+    used_inputs = secp256k1_surjectionproof_count_used_inputs(proof->used_inputs, proof->n_inputs);
+    if (used_inputs==0) {
+        return 0;
+    }
+    signature_len = 32 * (1 + used_inputs);
+    serialized_len = 2 + used_inputs_len + signature_len;
     if (*outputlen < serialized_len) {
         return 0;
     }
 
     output[0] = proof->n_inputs % 0x100;
     output[1] = proof->n_inputs / 0x100;
-    memcpy(&output[2], proof->used_inputs, (proof->n_inputs + 7) / 8);
-    memcpy(&output[2 + (proof->n_inputs + 7) / 8], proof->data, signature_len);
+    memcpy(&output[2], proof->used_inputs, used_inputs_len);
+    memcpy(&output[2 + used_inputs_len], proof->data, signature_len);
     *outputlen = serialized_len;
 
     return 1;
@@ -94,21 +204,37 @@ int secp256k1_surjectionproof_serialize(const secp256k1_context* ctx, unsigned c
 size_t secp256k1_surjectionproof_n_total_inputs(const secp256k1_context* ctx, const secp256k1_surjectionproof* proof) {
     VERIFY_CHECK(ctx != NULL);
     ARG_CHECK(proof != NULL);
+    ARG_CHECK(secp256k1_surjectionproof_valid_n_inputs(proof));
     (void) ctx;
     return proof->n_inputs;
 }
 
+/* Returns: the positive number of inputs for the given proof. In case of error return 0  */
 size_t secp256k1_surjectionproof_n_used_inputs(const secp256k1_context* ctx, const secp256k1_surjectionproof* proof) {
+    size_t used_inputs_len;
     VERIFY_CHECK(ctx != NULL);
     ARG_CHECK(proof != NULL);
+    ARG_CHECK(secp256k1_surjectionproof_valid_n_inputs(proof));
+    ARG_CHECK(secp256k1_surjectionproof_valid_bitmap(proof->used_inputs, proof->n_inputs));
     (void) ctx;
-    return secp256k1_count_bits_set(proof->used_inputs, (proof->n_inputs + 7) / 8);
+    used_inputs_len = (proof->n_inputs + 7) / 8;
+    (void)used_inputs_len;
+    return secp256k1_surjectionproof_count_used_inputs(proof->used_inputs, proof->n_inputs);
 }
 
 size_t secp256k1_surjectionproof_serialized_size(const secp256k1_context* ctx, const secp256k1_surjectionproof* proof) {
+    size_t used_inputs_len;
+    size_t used_inputs;
     VERIFY_CHECK(ctx != NULL);
     ARG_CHECK(proof != NULL);
-    return 2 + (proof->n_inputs + 7) / 8 + 32 * (1 + secp256k1_surjectionproof_n_used_inputs(ctx, proof));
+    ARG_CHECK(secp256k1_surjectionproof_valid_n_inputs(proof));
+    ARG_CHECK(secp256k1_surjectionproof_valid_bitmap(proof->used_inputs, proof->n_inputs));
+    used_inputs_len = (proof->n_inputs + 7) / 8;
+    used_inputs = secp256k1_surjectionproof_n_used_inputs(ctx, proof);
+    if (used_inputs==0) {
+        return 0;
+    }
+    return 2 + used_inputs_len + 32 * (1 + used_inputs);
 }
 
 typedef struct {
@@ -169,6 +295,10 @@ int secp256k1_surjectionproof_initialize(const secp256k1_context* ctx, secp256k1
     memset(proof->data, 0, sizeof(proof->data));
     proof->n_inputs = n_input_tags;
 
+    if (n_max_iterations>=INT_MAX) {
+        return 0;
+    }
+
     while (1) {
         int has_output_tag = 0;
         size_t i;
@@ -208,7 +338,12 @@ int secp256k1_surjectionproof_initialize(const secp256k1_context* ctx, secp256k1
     }
 }
 
-int secp256k1_surjectionproof_generate(const secp256k1_context* ctx, secp256k1_surjectionproof* proof, const secp256k1_generator* ephemeral_input_tags, size_t n_ephemeral_input_tags, const secp256k1_generator* ephemeral_output_tag, size_t input_index, const unsigned char *input_blinding_key, const unsigned char *output_blinding_key) {
+int secp256k1_surjectionproof_generate(const secp256k1_context* ctx, secp256k1_surjectionproof* proof,
+    const secp256k1_generator* ephemeral_input_tags, size_t n_ephemeral_input_tags,
+    const secp256k1_generator* ephemeral_output_tag, size_t input_index,
+    const unsigned char *input_blinding_key,
+    const unsigned char *output_blinding_key)
+{
     secp256k1_scalar blinding_key;
     secp256k1_scalar tmps;
     secp256k1_scalar nonce;
@@ -244,11 +379,15 @@ int secp256k1_surjectionproof_generate(const secp256k1_context* ctx, secp256k1_s
     }
     secp256k1_scalar_set_b32(&blinding_key, output_blinding_key, &overflow);
     if (overflow) {
+        secp256k1_scalar_clear(&blinding_key);
+        secp256k1_scalar_clear(&tmps);
         return 0;
     }
     /* The only time the input may equal the output is if neither one was blinded in the first place,
      * i.e. both blinding keys are zero. Otherwise this is a privacy leak. */
     if (secp256k1_scalar_eq(&tmps, &blinding_key) && !secp256k1_scalar_is_zero(&blinding_key)) {
+        secp256k1_scalar_clear(&blinding_key);
+        secp256k1_scalar_clear(&tmps);
         return 0;
     }
     secp256k1_scalar_negate(&tmps, &tmps);
@@ -257,35 +396,62 @@ int secp256k1_surjectionproof_generate(const secp256k1_context* ctx, secp256k1_s
     /* Compute public keys */
     n_total_pubkeys = secp256k1_surjectionproof_n_total_inputs(ctx, proof);
     n_used_pubkeys = secp256k1_surjectionproof_n_used_inputs(ctx, proof);
-    if (n_used_pubkeys > n_total_pubkeys || n_total_pubkeys != n_ephemeral_input_tags) {
+    if (n_used_pubkeys==0 || n_used_pubkeys > n_total_pubkeys || n_total_pubkeys != n_ephemeral_input_tags) {
+        secp256k1_scalar_clear(&blinding_key);
+        secp256k1_scalar_clear(&tmps);
         return 0;
     }
 
-    secp256k1_generator_load(&output, ephemeral_output_tag);
+    if (!secp256k1_generator_load(&output, ephemeral_output_tag)) {
+        secp256k1_scalar_clear(&blinding_key);
+        secp256k1_scalar_clear(&tmps);
+        return 0;
+    }
     for (i = 0; i < n_total_pubkeys; i++) {
-        secp256k1_generator_load(&inputs[i], &ephemeral_input_tags[i]);
+        if (!secp256k1_generator_load(&inputs[i], &ephemeral_input_tags[i])) {
+            secp256k1_scalar_clear(&blinding_key);
+            secp256k1_scalar_clear(&tmps);
+            return 0;
+        }
     }
 
-    secp256k1_surjection_compute_public_keys(ring_pubkeys, n_used_pubkeys, inputs, n_total_pubkeys, proof->used_inputs, &output, input_index, &ring_input_index);
+    if (!secp256k1_surjection_compute_public_keys(ring_pubkeys, n_used_pubkeys, inputs, n_total_pubkeys, proof->used_inputs, &output, input_index, &ring_input_index)) {
+        secp256k1_scalar_clear(&blinding_key);
+        secp256k1_scalar_clear(&tmps);
+        return 0;
+    }
 
     /* Produce signature */
     rsizes[0] = (int) n_used_pubkeys;
     indices[0] = (int) ring_input_index;
-    secp256k1_surjection_genmessage(msg32, inputs, n_total_pubkeys, &output);
-    if (secp256k1_surjection_genrand(borromean_s, n_used_pubkeys, &blinding_key) == 0) {
+    if (!secp256k1_surjection_genmessage(msg32, inputs, n_total_pubkeys, &output)) {
+        secp256k1_scalar_clear(&blinding_key);
+        secp256k1_scalar_clear(&tmps);
         return 0;
     }
-    /* Borromean sign will overwrite one of the s values we just generated, so use
-     * it as a nonce instead. This avoids extra random generation and also is an
-     * homage to the rangeproof code which does this very cleverly to encode messages. */
-    nonce = borromean_s[ring_input_index];
-    secp256k1_scalar_clear(&borromean_s[ring_input_index]);
+    if (secp256k1_surjection_genrand(borromean_s, n_used_pubkeys, &blinding_key) == 0) {
+        secp256k1_scalar_clear(&blinding_key);
+        secp256k1_scalar_clear(&tmps);
+        return 0;
+    }
+    if (!secp256k1_surjection_gen_nonce(&nonce, &blinding_key, msg32, ring_pubkeys, n_used_pubkeys, ring_input_index)) {
+        secp256k1_scalar_clear(&nonce);
+        secp256k1_scalar_clear(&blinding_key);
+        secp256k1_scalar_clear(&tmps);
+        return 0;
+    }
     if (secp256k1_borromean_sign(&ctx->ecmult_ctx, &ctx->ecmult_gen_ctx, &proof->data[0], borromean_s, ring_pubkeys, &nonce, &blinding_key, rsizes, indices, 1, msg32, 32) == 0) {
+        secp256k1_scalar_clear(&nonce);
+        secp256k1_scalar_clear(&blinding_key);
+        secp256k1_scalar_clear(&tmps);
         return 0;
     }
     for (i = 0; i < n_used_pubkeys; i++) {
         secp256k1_scalar_get_b32(&proof->data[32 + 32 * i], &borromean_s[i]);
     }
+    secp256k1_scalar_clear(&nonce);
+    secp256k1_scalar_clear(&blinding_key);
+    secp256k1_scalar_clear(&tmps);
     return 1;
 }
 
@@ -313,9 +479,13 @@ int secp256k1_surjectionproof_verify(const secp256k1_context* ctx, const secp256
         return 0;
     }
 
-    secp256k1_generator_load(&output, ephemeral_output_tag);
+    if (!secp256k1_generator_load(&output, ephemeral_output_tag)) {
+        return 0;
+    }
     for (i = 0; i < n_total_pubkeys; i++) {
-        secp256k1_generator_load(&inputs[i], &ephemeral_input_tags[i]);
+        if (!secp256k1_generator_load(&inputs[i], &ephemeral_input_tags[i])) {
+            return 0;
+        }
     }
 
     if (secp256k1_surjection_compute_public_keys(ring_pubkeys, n_used_pubkeys, inputs, n_total_pubkeys, proof->used_inputs, &output, 0, NULL) == 0) {
@@ -331,7 +501,9 @@ int secp256k1_surjectionproof_verify(const secp256k1_context* ctx, const secp256
             return 0;
         }
     }
-    secp256k1_surjection_genmessage(msg32, inputs, n_total_pubkeys, &output);
+    if (!secp256k1_surjection_genmessage(msg32, inputs, n_total_pubkeys, &output)) {
+        return 0;
+    }
     return secp256k1_borromean_verify(&ctx->ecmult_ctx, NULL, &proof->data[0], borromean_s, ring_pubkeys, rsizes, 1, msg32, 32);
 }
 
