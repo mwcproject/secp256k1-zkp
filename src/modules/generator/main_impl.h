@@ -165,8 +165,8 @@ static int shallue_van_de_woestijne(secp256k1_ge* ge, const secp256k1_fe* t) {
     secp256k1_fe_sqr(&x3n, &wd); /* mag 1 */
     secp256k1_fe_add(&x3n, &x3d); /* mag 2 */
     secp256k1_fe_mul(&jinv, &x3d, &wd); /* mag 1 */
-    // checking whether the denominator jinv is zero modulo p, even if its internal
-    // representation is not already canonical
+    /* checking whether the denominator jinv is zero modulo p, even if its internal */
+    /* representation is not already canonical */
     if (secp256k1_fe_normalizes_to_zero(&jinv)) {
         return 0;
     }

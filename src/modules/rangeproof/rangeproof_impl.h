@@ -74,7 +74,7 @@ SECP256K1_INLINE static int secp256k1_rangeproof_genrand(secp256k1_scalar *sec, 
     secp256k1_rfc6979_hmac_sha256 rng;
     secp256k1_scalar acc;
     int overflow;
-    int ret;
+    int ret = 0;
     size_t i;
     size_t j;
     int b;
@@ -82,9 +82,9 @@ SECP256K1_INLINE static int secp256k1_rangeproof_genrand(secp256k1_scalar *sec, 
     VERIFY_CHECK(len <= 10);
     memcpy(rngseed, nonce, 32);
     if (!secp256k1_rangeproof_serialize_point(rngseed + 32, commit))
-        return 0;
+        goto cleanup;
     if (!secp256k1_rangeproof_serialize_point(rngseed + 32 + 33, genp))
-        return 0;
+        goto cleanup;
     memcpy(rngseed + 33 + 33 + 32, proof, len);
     secp256k1_rfc6979_hmac_sha256_initialize(&rng, rngseed, 32 + 33 + 33 + len);
     secp256k1_scalar_clear(&acc);
@@ -115,9 +115,12 @@ SECP256K1_INLINE static int secp256k1_rangeproof_genrand(secp256k1_scalar *sec, 
             npub++;
         }
     }
+cleanup:
+    /* These clears only write, including on failures before initialization. */
+    secp256k1_memclear(rngseed, sizeof(rngseed));
     secp256k1_rfc6979_hmac_sha256_finalize(&rng);
     secp256k1_scalar_clear(&acc);
-    secp256k1_memclear(tmp, 32);
+    secp256k1_memclear(tmp, sizeof(tmp));
     return ret;
 }
 
@@ -224,12 +227,13 @@ SECP256K1_INLINE static int secp256k1_rangeproof_sign_impl(const secp256k1_ecmul
     size_t i;
     int overflow;
     size_t npub;
+    int ret = 0;
     len = 0;
     if (*plen < 65 || min_value > value || min_bits > 64 || min_bits < 0 || exp < -1 || exp > 18) {
-        return 0;
+        goto cleanup;
     }
     if (!secp256k1_range_proveparams(&v, &rings, rsizes, &npub, secidx, &min_value, &mantissa, &scale, &exp, &min_bits, value)) {
-        return 0;
+        goto cleanup;
     }
     proof[len] = (rsizes[0] > 1 ? (64 | exp) : 0) | (min_value ? 32 : 0);
     len++;
@@ -249,18 +253,18 @@ SECP256K1_INLINE static int secp256k1_rangeproof_sign_impl(const secp256k1_ecmul
      * technically there are 64 bytes available if we avoided the other data, but this is difficult
      * because it's not always in the same place. */
     if (msg_len > 0 && msg_len > 128 * (rings - 1)) {
-        return 0;
+        goto cleanup;
     }
     /* Do we have enough room for the proof? */
     if (*plen - len < 32 * (npub + rings - 1) + 32 + ((rings+6) >> 3)) {
-        return 0;
+        goto cleanup;
     }
     secp256k1_sha256_initialize(&sha256_m);
     if (!secp256k1_rangeproof_serialize_point(tmp, commit))
-        return 0;
+        goto cleanup;
     secp256k1_sha256_write(&sha256_m, tmp, 33);
     if (!secp256k1_rangeproof_serialize_point(tmp, genp))
-        return 0;
+        goto cleanup;
     secp256k1_sha256_write(&sha256_m, tmp, 33);
     secp256k1_sha256_write(&sha256_m, proof, len);
 
@@ -282,9 +286,9 @@ SECP256K1_INLINE static int secp256k1_rangeproof_sign_impl(const secp256k1_ecmul
         prep[idx] = 128;
     }
     if (!secp256k1_rangeproof_genrand(sec, s, prep, rsizes, rings, nonce, commit, proof, len, genp)) {
-        return 0;
+        goto cleanup;
     }
-    memset(prep, 0, 4096);
+    secp256k1_memclear(prep, sizeof(prep));
     for (i = 0; i < rings; i++) {
         /* Sign will overwrite the non-forged signature, move that random value into the nonce. */
         k[i] = s[i * 4 + secidx[i]];
@@ -299,7 +303,7 @@ SECP256K1_INLINE static int secp256k1_rangeproof_sign_impl(const secp256k1_ecmul
     secp256k1_scalar_set_b32(&stmp, blind, &overflow);
     secp256k1_scalar_add(&sec[rings - 1], &sec[rings - 1], &stmp);
     if (overflow || secp256k1_scalar_is_zero(&sec[rings - 1])) {
-        return 0;
+        goto cleanup;
     }
     signs = &proof[len];
     /* We need one sign bit for each blinded value we send. */
@@ -311,9 +315,9 @@ SECP256K1_INLINE static int secp256k1_rangeproof_sign_impl(const secp256k1_ecmul
     for (i = 0; i < rings; i++) {
         /*OPT: Use the precomputed gen2 basis?*/
         if (!secp256k1_pedersen_ecmult(&pubs[npub], &sec[i], ((uint64_t)secidx[i] * scale) << (i*2), genp, &secp256k1_ge_const_g))
-            return 0;
+            goto cleanup;
         if (secp256k1_gej_is_infinity(&pubs[npub])) {
-            return 0;
+            goto cleanup;
         }
         if (i < rings - 1) {
             unsigned char tmpc[33];
@@ -322,9 +326,9 @@ SECP256K1_INLINE static int secp256k1_rangeproof_sign_impl(const secp256k1_ecmul
             /*OPT: split loop and batch invert.*/
             /*OPT: do not compute full pubs[npub] in ge form; we only need x */
             if (!secp256k1_ge_set_gej_var(&c, &pubs[npub]))
-                return 0;
+                goto cleanup;
             if (!secp256k1_rangeproof_serialize_point(tmpc, &c))
-                return 0;
+                goto cleanup;
             quadness = tmpc[0];
             secp256k1_sha256_write(&sha256_m, tmpc, 33);
             signs[i>>3] |= quadness << (i&7);
@@ -339,7 +343,7 @@ SECP256K1_INLINE static int secp256k1_rangeproof_sign_impl(const secp256k1_ecmul
     }
     secp256k1_sha256_finalize(&sha256_m, tmp);
     if (!secp256k1_borromean_sign(ecmult_ctx, ecmult_gen_ctx, &proof[len], s, pubs, k, sec, rsizes, secidx, rings, tmp, 32)) {
-        return 0;
+        goto cleanup;
     }
     len += 32;
     for (i = 0; i < npub; i++) {
@@ -348,8 +352,17 @@ SECP256K1_INLINE static int secp256k1_rangeproof_sign_impl(const secp256k1_ecmul
     }
     VERIFY_CHECK(len <= *plen);
     *plen = len;
-    memset(prep, 0, 4096);
-    return 1;
+    ret = 1;
+cleanup:
+    /* Clear local secrets on every exit, including partially initialized arrays. */
+    secp256k1_memclear(prep, sizeof(prep));
+    secp256k1_memclear(s, sizeof(s));
+    secp256k1_memclear(sec, sizeof(sec));
+    secp256k1_memclear(k, sizeof(k));
+    secp256k1_scalar_clear(&stmp);
+    secp256k1_memclear(secidx, sizeof(secidx));
+    secp256k1_memclear(&v, sizeof(v));
+    return ret;
 }
 
 /* Computes blinding factor x given k, s, and the challenge e. */
