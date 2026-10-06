@@ -313,6 +313,7 @@ static int secp256k1_scalar_split_lambda(secp256k1_scalar *r1, secp256k1_scalar 
 
 static int secp256k1_scalar_split_lambda(secp256k1_scalar *r1, secp256k1_scalar *r2, const secp256k1_scalar *a) {
     secp256k1_scalar c1, c2;
+    int ret = 0;
     static const secp256k1_scalar minus_lambda = SECP256K1_SCALAR_CONST(
         0xAC9C52B3UL, 0x3FA3CF1FUL, 0x5AD9E3FDUL, 0x77ED9BA4UL,
         0xA880B9FCUL, 0x8EC739C2UL, 0xE0CFC810UL, 0xB51283CFUL
@@ -334,18 +335,23 @@ static int secp256k1_scalar_split_lambda(secp256k1_scalar *r1, secp256k1_scalar 
         0x7ED6010EUL, 0x88286F54UL, 0x7FA90ABFUL, 0xE4C42212UL
     );
     if (r1 == a || r2 == a || r1 == r2)
-        return 0;
+        goto cleanup;
     /* these _var calls are constant time since the shift amount is constant */
     if (!secp256k1_scalar_mul_shift_var(&c1, a, &g1, 272))
-        return 0;
+        goto cleanup;
     if (!secp256k1_scalar_mul_shift_var(&c2, a, &g2, 272))
-        return 0;
+        goto cleanup;
     secp256k1_scalar_mul(&c1, &c1, &minus_b1);
     secp256k1_scalar_mul(&c2, &c2, &minus_b2);
     secp256k1_scalar_add(r2, &c1, &c2);
     secp256k1_scalar_mul(r1, r2, &minus_lambda);
     secp256k1_scalar_add(r1, r1, a);
-    return 1;
+    ret = 1;
+
+cleanup:
+    secp256k1_scalar_clear(&c1);
+    secp256k1_scalar_clear(&c2);
+    return ret;
 }
 #endif
 #endif

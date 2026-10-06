@@ -12,15 +12,16 @@
 #include "ecmult_const.h"
 #include "ecmult_impl.h"
 
-/* This is like `ECMULT_TABLE_GET_GE` but is constant time */
+/* This is like `ECMULT_TABLE_GET_GE` but is constant time.
+ * Invalid digits jump to secp256k1_ecmult_const's cleanup path. */
 #define ECMULT_CONST_TABLE_GET_GE(r,pre,n,w) do { \
     int m; \
     int abs_n = (n) * (((n) > 0) * 2 - 1); \
     int idx_n = abs_n / 2; \
     secp256k1_fe neg_y; \
-    if (((n) & 1) != 1) {return 0;} \
-    if ((n) < -((1 << ((w)-1)) - 1)) {return 0;} \
-    if ((n) >  ((1 << ((w)-1)) - 1)) {return 0;} \
+    if (((n) & 1) != 1) {goto cleanup;} \
+    if ((n) < -((1 << ((w)-1)) - 1)) {goto cleanup;} \
+    if ((n) >  ((1 << ((w)-1)) - 1)) {goto cleanup;} \
     secp256k1_fe_clear(&(r)->x); \
     secp256k1_fe_clear(&(r)->y); \
     for (m = 0; m < ECMULT_TABLE_SIZE(w); m++) { \
@@ -52,6 +53,7 @@ static int secp256k1_wnaf_const(int *wnaf, secp256k1_scalar s, int w, int size, 
     int global_sign;
     int skew = 0;
     int word = 0;
+    int ret = 0;
 
     /* 1 2 3 */
     int u_last;
@@ -63,7 +65,7 @@ static int secp256k1_wnaf_const(int *wnaf, secp256k1_scalar s, int w, int size, 
     int not_neg_one;
 
     if (*err)
-        return 0;
+        goto cleanup;
 
     /* Note that we cannot handle even numbers by negating them to be odd, as is
      * done in other implementations, since if our scalars were specified to have
@@ -98,7 +100,7 @@ static int secp256k1_wnaf_const(int *wnaf, secp256k1_scalar s, int w, int size, 
     /* 4 */
     u_last = secp256k1_scalar_shr_int(&s, w, err);
     if (*err)
-        return 0;
+        goto cleanup;
     while (word * w < size) {
         int sign;
         int even;
@@ -106,7 +108,7 @@ static int secp256k1_wnaf_const(int *wnaf, secp256k1_scalar s, int w, int size, 
         /* 4.1 4.4 */
         u = secp256k1_scalar_shr_int(&s, w, err);
         if (*err)
-            return 0;
+            goto cleanup;
         /* 4.2 */
         even = ((u & 1) == 0);
         sign = 2 * (u_last > 0) - 1;
@@ -122,13 +124,18 @@ static int secp256k1_wnaf_const(int *wnaf, secp256k1_scalar s, int w, int size, 
 
     if (!secp256k1_scalar_is_zero(&s)) {
         *err = 1;
-        return 0;
+        goto cleanup;
     }
     if (word != WNAF_SIZE_BITS(size, w)) {
         *err = 1;
-        return 0;
+        goto cleanup;
     }
-    return skew;
+    ret = skew;
+
+cleanup:
+    secp256k1_scalar_clear(&s);
+    secp256k1_scalar_clear(&neg_s);
+    return ret;
 }
 
 static int secp256k1_ecmult_const(secp256k1_gej *r, const secp256k1_ge *a, const secp256k1_scalar *scalar, int size) {
@@ -146,6 +153,7 @@ static int secp256k1_ecmult_const(secp256k1_gej *r, const secp256k1_ge *a, const
     int wnaf_1[1 + WNAF_SIZE(WINDOW_A - 1)];
 
     int i;
+    int ret = 0;
     secp256k1_scalar sc = *scalar;
 
     /* build wnaf representation for q. */
@@ -156,18 +164,18 @@ static int secp256k1_ecmult_const(secp256k1_gej *r, const secp256k1_ge *a, const
         rsize = 128;
         /* split q into q_1 and q_lam (where q = q_1 + q_lam*lambda, and q_1 and q_lam are ~128 bit) */
         if (!secp256k1_scalar_split_lambda(&q_1, &q_lam, &sc))
-            return 0;
+            goto cleanup;
         skew_1   = secp256k1_wnaf_const(wnaf_1,   q_1,   WINDOW_A - 1, 128, &err);
         skew_lam = secp256k1_wnaf_const(wnaf_lam, q_lam, WINDOW_A - 1, 128, &err);
         if (err)
-            return 0;
+            goto cleanup;
     } else
 #endif
     {
         int err = 0;
         skew_1   = secp256k1_wnaf_const(wnaf_1, sc, WINDOW_A - 1, size, &err);
         if (err)
-            return 0;
+            goto cleanup;
 #ifdef USE_ENDOMORPHISM
         skew_lam = 0;
 #endif
@@ -197,14 +205,14 @@ static int secp256k1_ecmult_const(secp256k1_gej *r, const secp256k1_ge *a, const
      * its new value added to it) */
     i = wnaf_1[WNAF_SIZE_BITS(rsize, WINDOW_A - 1)];
     if (i == 0)
-        return 0;
+        goto cleanup;
     ECMULT_CONST_TABLE_GET_GE(&tmpa, pre_a, i, WINDOW_A);
     secp256k1_gej_set_ge(r, &tmpa);
 #ifdef USE_ENDOMORPHISM
     if (size > 128) {
         i = wnaf_lam[WNAF_SIZE_BITS(rsize, WINDOW_A - 1)];
         if (i == 0)
-            return 0;
+            goto cleanup;
         ECMULT_CONST_TABLE_GET_GE(&tmpa, pre_a_lam, i, WINDOW_A);
         secp256k1_gej_add_ge(r, r, &tmpa);
     }
@@ -220,14 +228,14 @@ static int secp256k1_ecmult_const(secp256k1_gej *r, const secp256k1_ge *a, const
         n = wnaf_1[i];
         ECMULT_CONST_TABLE_GET_GE(&tmpa, pre_a, n, WINDOW_A);
         if (n == 0)
-            return 0;
+            goto cleanup;
         secp256k1_gej_add_ge(r, r, &tmpa);
 #ifdef USE_ENDOMORPHISM
         if (size > 128) {
             n = wnaf_lam[i];
             ECMULT_CONST_TABLE_GET_GE(&tmpa, pre_a_lam, n, WINDOW_A);
             if (n == 0)
-                return 0;
+                goto cleanup;
             secp256k1_gej_add_ge(r, r, &tmpa);
         }
 #endif
@@ -277,7 +285,18 @@ static int secp256k1_ecmult_const(secp256k1_gej *r, const secp256k1_ge *a, const
         }
 #endif
     }
-    return 1;
+    ret = 1;
+
+cleanup:
+    /* These helpers only write, so cleanup also covers uninitialized locals. */
+    secp256k1_scalar_clear(&sc);
+    secp256k1_memclear(wnaf_1, sizeof(wnaf_1));
+#ifdef USE_ENDOMORPHISM
+    secp256k1_scalar_clear(&q_1);
+    secp256k1_scalar_clear(&q_lam);
+    secp256k1_memclear(wnaf_lam, sizeof(wnaf_lam));
+#endif
+    return ret;
 }
 
 #endif /* SECP256K1_ECMULT_CONST_IMPL_H */

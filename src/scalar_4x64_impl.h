@@ -918,6 +918,7 @@ static void secp256k1_scalar_mul(secp256k1_scalar *r, const secp256k1_scalar *a,
     uint64_t l[8];
     secp256k1_scalar_mul_512(l, a, b);
     secp256k1_scalar_reduce_512(r, l);
+    secp256k1_memclear(l, sizeof(l));
 }
 
 static int secp256k1_scalar_shr_int(secp256k1_scalar *r, int n, int * err) {
@@ -943,6 +944,7 @@ static void secp256k1_scalar_sqr(secp256k1_scalar *r, const secp256k1_scalar *a)
     uint64_t l[8];
     secp256k1_scalar_sqr_512(l, a);
     secp256k1_scalar_reduce_512(r, l);
+    secp256k1_memclear(l, sizeof(l));
 }
 
 #ifdef USE_ENDOMORPHISM
@@ -978,6 +980,7 @@ SECP256K1_INLINE static int secp256k1_scalar_mul_shift_var(secp256k1_scalar *r, 
     r->d[2] = shift < 384 ? (l[2 + shiftlimbs] >> shiftlow | (shift < 320 && shiftlow ? (l[3 + shiftlimbs] << shifthigh) : 0)) : 0;
     r->d[3] = shift < 320 ? (l[3 + shiftlimbs] >> shiftlow) : 0;
     secp256k1_scalar_cadd_bit(r, 0, (l[(shift - 1) >> 6] >> ((shift - 1) & 0x3f)) & 1);
+    secp256k1_memclear(l, sizeof(l));
     return 1;
 }
 
@@ -988,87 +991,94 @@ SECP256K1_INLINE static int secp256k1_scalar_mul_shift_var(secp256k1_scalar *r, 
   a += b; d = ROTL32(d ^ a, 8); \
   c += d; b = ROTL32(b ^ c, 7);
 
-#ifdef WORDS_BIGENDIAN
-#define LE32(p) ((((p) & 0xFF) << 24) | (((p) & 0xFF00) << 8) | (((p) & 0xFF0000) >> 8) | (((p) & 0xFF000000) >> 24))
-#define BE32(p) (p)
-#else
-#define BE32(p) ((((p) & 0xFF) << 24) | (((p) & 0xFF00) << 8) | (((p) & 0xFF0000) >> 8) | (((p) & 0xFF000000) >> 24))
-#define LE32(p) (p)
-#endif
+/* Always reverse numeric ChaCha words when packing scalar limbs. */
+#define BE32(p) ( \
+    (((p) & 0x000000ffU) << 24) | \
+    (((p) & 0x0000ff00U) <<  8) | \
+    (((p) & 0x00ff0000U) >>  8) | \
+    (((p) & 0xff000000U) >> 24))
 
 static void secp256k1_scalar_chacha20(secp256k1_scalar *r1, secp256k1_scalar *r2, const unsigned char *seed, uint64_t idx) {
     size_t n;
     uint32_t over_count = 0;
     uint32_t seed32[8];
-    uint32_t x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15;
+    uint32_t state[16];
     int over1, over2;
 
-    memcpy((void *) seed32, (const void *) seed, 32);
+    /* Decode the seed explicitly, without relying on host byte order. */
+    for (n = 0; n < 8; n++) {
+        seed32[n] = (uint32_t)seed[4 * n]
+                  | ((uint32_t)seed[4 * n + 1] << 8)
+                  | ((uint32_t)seed[4 * n + 2] << 16)
+                  | ((uint32_t)seed[4 * n + 3] << 24);
+    }
     do {
-        x0 = 0x61707865;
-        x1 = 0x3320646e;
-        x2 = 0x79622d32;
-        x3 = 0x6b206574;
-        x4 = LE32(seed32[0]);
-        x5 = LE32(seed32[1]);
-        x6 = LE32(seed32[2]);
-        x7 = LE32(seed32[3]);
-        x8 = LE32(seed32[4]);
-        x9 = LE32(seed32[5]);
-        x10 = LE32(seed32[6]);
-        x11 = LE32(seed32[7]);
-        x12 = idx;
-        x13 = idx >> 32;
-        x14 = 0;
-        x15 = over_count;
+        state[0] = 0x61707865;
+        state[1] = 0x3320646e;
+        state[2] = 0x79622d32;
+        state[3] = 0x6b206574;
+        state[4] = seed32[0];
+        state[5] = seed32[1];
+        state[6] = seed32[2];
+        state[7] = seed32[3];
+        state[8] = seed32[4];
+        state[9] = seed32[5];
+        state[10] = seed32[6];
+        state[11] = seed32[7];
+        state[12] = idx;
+        state[13] = idx >> 32;
+        state[14] = 0;
+        state[15] = over_count;
 
         n = 10;
         while (n--) {
-            QUARTERROUND(x0, x4, x8,x12)
-            QUARTERROUND(x1, x5, x9,x13)
-            QUARTERROUND(x2, x6,x10,x14)
-            QUARTERROUND(x3, x7,x11,x15)
-            QUARTERROUND(x0, x5,x10,x15)
-            QUARTERROUND(x1, x6,x11,x12)
-            QUARTERROUND(x2, x7, x8,x13)
-            QUARTERROUND(x3, x4, x9,x14)
+            QUARTERROUND(state[0], state[4], state[8], state[12])
+            QUARTERROUND(state[1], state[5], state[9], state[13])
+            QUARTERROUND(state[2], state[6], state[10], state[14])
+            QUARTERROUND(state[3], state[7], state[11], state[15])
+            QUARTERROUND(state[0], state[5], state[10], state[15])
+            QUARTERROUND(state[1], state[6], state[11], state[12])
+            QUARTERROUND(state[2], state[7], state[8], state[13])
+            QUARTERROUND(state[3], state[4], state[9], state[14])
         }
 
-        x0 += 0x61707865;
-        x1 += 0x3320646e;
-        x2 += 0x79622d32;
-        x3 += 0x6b206574;
-        x4 += LE32(seed32[0]);
-        x5 += LE32(seed32[1]);
-        x6 += LE32(seed32[2]);
-        x7 += LE32(seed32[3]);
-        x8 += LE32(seed32[4]);
-        x9 += LE32(seed32[5]);
-        x10 += LE32(seed32[6]);
-        x11 += LE32(seed32[7]);
-        x12 += idx;
-        x13 += idx >> 32;
-        x14 += 0;
-        x15 += over_count;
+        state[0] += 0x61707865;
+        state[1] += 0x3320646e;
+        state[2] += 0x79622d32;
+        state[3] += 0x6b206574;
+        state[4] += seed32[0];
+        state[5] += seed32[1];
+        state[6] += seed32[2];
+        state[7] += seed32[3];
+        state[8] += seed32[4];
+        state[9] += seed32[5];
+        state[10] += seed32[6];
+        state[11] += seed32[7];
+        state[12] += idx;
+        state[13] += idx >> 32;
+        state[14] += 0;
+        state[15] += over_count;
 
-        r1->d[3] = BE32((uint64_t) x0) << 32 | BE32(x1);
-        r1->d[2] = BE32((uint64_t) x2) << 32 | BE32(x3);
-        r1->d[1] = BE32((uint64_t) x4) << 32 | BE32(x5);
-        r1->d[0] = BE32((uint64_t) x6) << 32 | BE32(x7);
-        r2->d[3] = BE32((uint64_t) x8) << 32 | BE32(x9);
-        r2->d[2] = BE32((uint64_t) x10) << 32 | BE32(x11);
-        r2->d[1] = BE32((uint64_t) x12) << 32 | BE32(x13);
-        r2->d[0] = BE32((uint64_t) x14) << 32 | BE32(x15);
+        r1->d[3] = BE32((uint64_t) state[0]) << 32 | BE32(state[1]);
+        r1->d[2] = BE32((uint64_t) state[2]) << 32 | BE32(state[3]);
+        r1->d[1] = BE32((uint64_t) state[4]) << 32 | BE32(state[5]);
+        r1->d[0] = BE32((uint64_t) state[6]) << 32 | BE32(state[7]);
+        r2->d[3] = BE32((uint64_t) state[8]) << 32 | BE32(state[9]);
+        r2->d[2] = BE32((uint64_t) state[10]) << 32 | BE32(state[11]);
+        r2->d[1] = BE32((uint64_t) state[12]) << 32 | BE32(state[13]);
+        r2->d[0] = BE32((uint64_t) state[14]) << 32 | BE32(state[15]);
 
         over1 = secp256k1_scalar_check_overflow(r1);
         over2 = secp256k1_scalar_check_overflow(r2);
         over_count++;
-   } while (over1 | over2);
+    } while (over1 | over2);
+
+    secp256k1_memclear(seed32, sizeof(seed32));
+    secp256k1_memclear(state, sizeof(state));
 }
 
 #undef ROTL32
 #undef QUARTERROUND
 #undef BE32
-#undef LE32
 
 #endif /* SECP256K1_SCALAR_REPR_IMPL_H */

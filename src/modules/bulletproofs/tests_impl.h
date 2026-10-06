@@ -593,6 +593,11 @@ void test_bulletproof_rangeproof(size_t nbits, size_t expected_size, const secp2
     /* Verify thrice at once where one has a different asset type */
     CHECK(secp256k1_bulletproof_rangeproof_verify_impl(&ctx->ecmult_ctx, scratch, proof_ptr, 3, plen, nbits, NULL, commitp_ptr, 1, value_gen, gens, NULL, 0) == 1);
 
+    /* Failed rewinds clear the output even before deriving any secrets. */
+    secp256k1_scalar_set_int(&blind_recovered, 1);
+    CHECK(secp256k1_bulletproof_rangeproof_rewind_impl(&v_recovered, &blind_recovered, proof, 0, NULL, &pcommit, &gens->blinding_gen[0], &secp256k1_generator_const_g, nonce, NULL, NULL, 0, NULL) == 0);
+    CHECK(secp256k1_scalar_is_zero(&blind_recovered));
+
     /* Rewind */
     CHECK(secp256k1_bulletproof_rangeproof_rewind_impl(&v_recovered, &blind_recovered, proof, plen, NULL, &pcommit, &gens->blinding_gen[0], &secp256k1_generator_const_g, nonce, NULL, NULL, 0, NULL) == 1);
     /* NULL (nothing) is not equals to zero */
@@ -602,6 +607,9 @@ void test_bulletproof_rangeproof(size_t nbits, size_t expected_size, const secp2
     CHECK(secp256k1_bulletproof_rangeproof_rewind_impl(&v_recovered, &blind_recovered, proof_private_nonce, plen_private_nonce, NULL, &pcommit, &gens->blinding_gen[0], &secp256k1_generator_const_g, nonce, private_nonce, NULL, 0, NULL) == 1);
     CHECK(v_recovered == v);
     CHECK(secp256k1_scalar_eq(&blind_recovered, &blind) == 1);
+    /* A wrong private nonce fails after deriving a candidate blinding factor. */
+    CHECK(secp256k1_bulletproof_rangeproof_rewind_impl(&v_recovered, &blind_recovered, proof_private_nonce, plen_private_nonce, NULL, &pcommit, &gens->blinding_gen[0], &secp256k1_generator_const_g, nonce, nonce, NULL, 0, NULL) == 0);
+    CHECK(secp256k1_scalar_is_zero(&blind_recovered));
     CHECK(secp256k1_bulletproof_rangeproof_rewind_impl(&v_recovered, &blind_recovered, proof_private_nonce, plen_private_nonce, NULL, &pcommit, &gens->blinding_gen[0], &secp256k1_generator_const_g, nonce, NULL, NULL, 0, NULL) == 1);
     CHECK(v_recovered == v);
     CHECK(secp256k1_scalar_eq(&blind_recovered, &blind) == 0); /* Blind shouldn't be recovered without private_nonce!!! */
@@ -612,7 +620,9 @@ void test_bulletproof_rangeproof(size_t nbits, size_t expected_size, const secp2
     CHECK(secp256k1_bulletproof_rangeproof_rewind_impl(&v_recovered, &blind_recovered, proof_tampered, plen, &zero, &pcommit, &gens->blinding_gen[0], &secp256k1_generator_const_g, nonce, NULL, NULL, 0, NULL) == 0);
 
     nonce[0] ^= 111;
+    secp256k1_scalar_set_int(&blind_recovered, 1);
     CHECK(secp256k1_bulletproof_rangeproof_rewind_impl(&v_recovered, &blind_recovered, proof, plen, NULL, &pcommit, &gens->blinding_gen[0], &secp256k1_generator_const_g, nonce, NULL, NULL, 0, NULL) == 0);
+    CHECK(secp256k1_scalar_is_zero(&blind_recovered));
     CHECK(secp256k1_bulletproof_rangeproof_rewind_impl(&v_recovered, &blind_recovered, proof, plen, &zero, &pcommit, &gens->blinding_gen[0], &secp256k1_generator_const_g, nonce, NULL, NULL, 0, NULL) == 0);
 
     secp256k1_scratch_destroy(scratch);

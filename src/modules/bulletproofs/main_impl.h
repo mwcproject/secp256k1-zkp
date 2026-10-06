@@ -262,6 +262,7 @@ int secp256k1_bulletproof_rangeproof_rewind(const secp256k1_context* ctx, uint64
     if (ret == 1) {
         secp256k1_scalar_get_b32(blind, &blinds);
     }
+    secp256k1_scalar_clear(&blinds);
     return ret;
 }
 
